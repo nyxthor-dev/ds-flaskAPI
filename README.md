@@ -95,7 +95,7 @@ response = openai.ChatCompletion.create(
 
 <div align="center">
 
-![Render Banner](https://cdn.worldvectorlogo.com/logos/render-4.svg)
+![Render](https://storage.googleapis.com/render-static-assets/brand/render-logo-full-light.png)
 
 </div>
 
@@ -122,7 +122,7 @@ response = openai.ChatCompletion.create(
 
 4. **Deploy**
    - Render desplegará automáticamente cada push a `main`
-   - Tu API estará en: `https://share.google/h14O93jKqE2pw94Ct`
+   - Tu API estará en: `https://tu-servicio.onrender.com`
 
 ### Tips:
 - ⏱️ Los servicios Free se pausan tras 15 min de inactividad
@@ -136,7 +136,7 @@ response = openai.ChatCompletion.create(
 
 <div align="center">
 
-![Docker Banner](https://www.docker.com/wp-content/uploads/2023/08/logo-guide-logos-1.png)
+![Docker](https://www.docker.com/wp-content/uploads/2022/03/Moby-logo.png)
 
 </div>
 
@@ -181,7 +181,7 @@ docker push tu-docker-registry/ds-flaskapi:latest
 
 <div align="center">
 
-![Railway Banner](https://railway.app/brand/logotype-light.png)
+![Railway](https://railway.app/brand/logotype-light.png)
 
 </div>
 
@@ -218,7 +218,7 @@ docker push tu-docker-registry/ds-flaskapi:latest
 
 <div align="center">
 
-![Heroku Banner](https://brand.heroku.com/static/media/heroku-logo-stroke.22b83966.svg)
+![Heroku](https://brand.heroku.com/static/media/heroku-logotype-vertical.f7cf0322.svg)
 
 </div>
 
@@ -256,7 +256,7 @@ web: gunicorn app:app
 
 <div align="center">
 
-![Vercel Banner](https://assets.vercel.com/image/upload/v1606654385/repositories/next-js/next-logo.png)
+![Vercel](https://assets.vercel.com/image/upload/v1606654385/repositories/next-js/next-logo.png)
 
 </div>
 
