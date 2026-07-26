@@ -50,7 +50,7 @@ def send_message():
 
 
 # ============================================================
-# NUEVO ENDPOINT: FORMATO COMPATIBLE CON OPENAI
+# NUEVO ENDPOINT: FORMATO COMPATIBLE CON OPENAI (CORREGIDO)
 # ============================================================
 @chat_bp.route('/openai', methods=['POST'])
 def send_message_openai():
@@ -79,6 +79,10 @@ def send_message_openai():
         created = int(time.time())
         model = model_type or "deepseek-chat"
 
+        # Variables para controlar el estado
+        has_content = False
+        thinking_phase = True  # Primero viene el pensamiento, luego la respuesta
+
         # 1) Primer chunk: anuncia el rol 'assistant'
         first_chunk = {
             "id": chunk_id,
@@ -95,8 +99,6 @@ def send_message_openai():
         }
         yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
 
-        has_content = False
-
         # 2) Iterar sobre los eventos internos
         for event in service.send_message(
             session_id=session_id,
@@ -110,6 +112,12 @@ def send_message_openai():
             if event['type'] in ('think', 'response'):
                 content = event['data']
                 if content:
+                    # Si es pensamiento y estamos en esa fase, agregar prefijo
+                    if event['type'] == 'think' and thinking_phase:
+                        content = f"💭 {content}"
+                    elif event['type'] == 'response':
+                        thinking_phase = False
+                    
                     chunk = {
                         "id": chunk_id,
                         "object": "chat.completion.chunk",
@@ -167,7 +175,6 @@ def send_message_openai():
 
         # Si nunca llegó contenido ni done (caso raro), forzamos final
         if not has_content:
-            # Asegurar que se envía al menos un chunk vacío y DONE
             final_chunk = {
                 "id": chunk_id,
                 "object": "chat.completion.chunk",
