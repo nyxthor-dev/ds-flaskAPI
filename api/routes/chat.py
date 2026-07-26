@@ -12,8 +12,15 @@ logger = logging.getLogger(__name__)
 
 @chat_bp.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
-    """Endpoint compatible con OpenAI."""
+    """
+    Endpoint compatible con OpenAI.
     
+    Los modelos son FICTICIOS:
+    - 'deepseek-chat' → thinking_enabled=False (sin razonamiento)
+    - 'deepseek-reasoner' → thinking_enabled=True (con razonamiento)
+    
+    El parámetro search_enabled se controla con 'search_enabled': true
+    """
     data = request.get_json()
     if not data:
         return jsonify({"error": {"message": "JSON requerido"}}), 400
@@ -32,22 +39,31 @@ def chat_completions():
     if not prompt:
         return jsonify({"error": {"message": "No se encontró mensaje de usuario"}}), 400
     
-    # Parámetros
+    # ============================================================
+    # MODELOS FICTICIOS - Solo controlan parámetros
+    # ============================================================
     model = data.get('model', 'deepseek-chat')
-    reasoning_enabled = data.get('reasoning_enabled', False)
+    
+    # Determinar si activar razonamiento según el modelo
+    thinking_enabled = False
+    if 'reasoner' in model.lower():
+        thinking_enabled = True
+    
+    # Permitir override por parámetro
+    if data.get('reasoning_enabled') is True:
+        thinking_enabled = True
+    
     search_enabled = data.get('search_enabled', False)
     
-    # Si el modelo es reasoner, forzar reasoning
-    if 'reasoner' in model.lower():
-        reasoning_enabled = True
-    
-    logger.info(f"📥 Chat request: model={model}, reasoning={reasoning_enabled}, search={search_enabled}")
-    logger.info(f"📝 Prompt: {prompt[:100]}...")
+    logger.info(f"📥 Chat request:")
+    logger.info(f"  Modelo solicitado: {model} (FICTICIO)")
+    logger.info(f"  Thinking: {thinking_enabled}")
+    logger.info(f"  Search: {search_enabled}")
+    logger.info(f"  Prompt: {prompt[:100]}...")
     
     try:
         # Crear sesión automática
         session_id = service.create_session()
-        logger.info(f"🔑 Sesión creada: {session_id}")
         
         # Recolectar respuesta
         respuesta = ""
@@ -56,7 +72,7 @@ def chat_completions():
         for event in service.send_message(
             session_id=session_id,
             prompt=prompt,
-            thinking_enabled=reasoning_enabled,
+            thinking_enabled=thinking_enabled,
             search_enabled=search_enabled
         ):
             if event['type'] == 'think':
@@ -65,11 +81,13 @@ def chat_completions():
                 chunk = event['data']
                 if chunk != "FINISHED":
                     respuesta += chunk
+            elif event['type'] == 'error':
+                logger.error(f"Error del servicio: {event['data']}")
+                return jsonify({"error": {"message": event['data']}}), 500
         
         logger.info(f"✅ Respuesta generada: {len(respuesta)} caracteres")
-        logger.info(f"🧠 Razonamiento: {len(razonamiento)} caracteres")
         
-        # Si no hay respuesta, generar un mensaje de error
+        # Si no hay respuesta, generar mensaje de error
         if not respuesta:
             respuesta = "Lo siento, no pude generar una respuesta. Por favor, intenta de nuevo."
         
@@ -78,7 +96,7 @@ def chat_completions():
             "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
             "object": "chat.completion",
             "created": int(time.time()),
-            "model": model,
+            "model": model,  # El modelo ficticio que el usuario eligió
             "choices": [{
                 "index": 0,
                 "message": {
@@ -103,3 +121,37 @@ def chat_completions():
     except Exception as e:
         logger.exception("❌ Error en chat completions")
         return jsonify({"error": {"message": str(e)}}), 500
+
+
+@chat_bp.route('/v1/chat/completions', methods=['OPTIONS'])
+def chat_completions_options():
+    response = jsonify({})
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response
+
+
+@chat_bp.route('/v1/models', methods=['GET'])
+def list_models():
+    """Lista de modelos FICTICIOS."""
+    models = [
+        {
+            "id": "deepseek-chat",
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "deepseek",
+            "description": "Modelo base sin razonamiento (thinking_enabled=False)"
+        },
+        {
+            "id": "deepseek-reasoner",
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "deepseek",
+            "description": "Modelo con razonamiento activado (thinking_enabled=True)"
+        }
+    ]
+    return jsonify({
+        "object": "list",
+        "data": models
+    }), 200
