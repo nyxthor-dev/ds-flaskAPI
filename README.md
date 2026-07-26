@@ -1,71 +1,55 @@
-<!-- README.md -->
-<h1 align="center">🌊 DS-FLACKAPI</h1>
+<div align="center">
 
-<p align="center">
-  <strong>API 100% compatible con OpenAI</strong><br>
-  Razonamiento + Búsqueda + Streaming
-</p>
+# 🌊 DS-FlaskAPI
 
-<hr>
+**API 100% compatible con OpenAI** • Razonamiento + Búsqueda + Streaming
 
-<h2>🚀 Endpoints</h2>
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org)
+[![Flask](https://img.shields.io/badge/Flask-2.0%2B-green)](https://flask.palletsprojects.com)
 
-<table>
-  <tr>
-    <th>Método</th>
-    <th>Endpoint</th>
-    <th>Descripción</th>
-  </tr>
-  <tr>
-    <td><code>POST</code></td>
-    <td><code>/v1/chat/completions</code></td>
-    <td>Chat (OpenAI)</td>
-  </tr>
-  <tr>
-    <td><code>GET</code></td>
-    <td><code>/v1/models</code></td>
-    <td>Lista modelos</td>
-  </tr>
-  <tr>
-    <td><code>POST</code></td>
-    <td><code>/v1/files</code></td>
-    <td>Subir archivo</td>
-  </tr>
-  <tr>
-    <td><code>GET</code></td>
-    <td><code>/api/health</code></td>
-    <td>Health check</td>
-  </tr>
-</table>
+</div>
 
-<hr>
+---
 
-<h2>📦 Instalación</h2>
+## 🚀 Inicio rápido
 
-<pre>
-git clone https://github.com/tu-usuario/deepseek-api
-cd deepseek-api
+### Instalación
+
+```bash
+git clone https://github.com/vm1008079-web/ds-flaskAPI
+cd ds-flaskAPI
 pip install -r requirements.txt
 cp .env.example .env
-# Edita .env con tus credenciales
 python app.py
-</pre>
+```
 
-<hr>
+### Variables de entorno
 
-<h2>🔧 Variables de entorno</h2>
-
-<pre>
+```env
 DEEPSEEK_TOKEN=tu_token
 DEEPSEEK_COOKIES=tu_cookies
 PORT=5000
-</pre>
+```
 
-<hr>
+---
 
-<h2>🎯 Ejemplo rápido</h2>
+## 📋 API Endpoints
 
-<pre>
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| `POST` | `/v1/chat/completions` | Chat compatible con OpenAI |
+| `GET` | `/v1/models` | Lista de modelos disponibles |
+| `POST` | `/v1/files` | Subir archivo |
+| `GET` | `/api/health` | Health check |
+
+---
+
+## 💡 Ejemplos de uso
+
+### cURL
+
+```bash
 curl -X POST https://tu-api.onrender.com/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
@@ -73,55 +57,57 @@ curl -X POST https://tu-api.onrender.com/v1/chat/completions \
     "messages": [{"role": "user", "content": "Hola"}],
     "reasoning_enabled": true
   }'
-</pre>
+```
 
-<hr>
+### Python + OpenAI SDK
 
-<h2>🔌 Compatibilidad</h2>
-
-<h3>OpenAI SDK</h3>
-<pre>
+```python
 import openai
+
 openai.api_base = "https://tu-api.onrender.com/v1"
 openai.api_key = "sk-dummy"
 
 response = openai.ChatCompletion.create(
     model="deepseek-reasoner",
-    messages=[{"role": "user", "content": "Hola"}]
+    messages=[{"role": "user", "content": "¿Cómo estás?"}]
 )
-</pre>
+```
 
-<h3>Roo Code / Cursor</h3>
-<table>
-  <tr><td><strong>Base URL</strong></td><td><code>https://tu-api.onrender.com/v1</code></td></tr>
-  <tr><td><strong>API Key</strong></td><td><code>sk-dummy</code></td></tr>
-  <tr><td><strong>Modelo</strong></td><td><code>deepseek-reasoner</code></td></tr>
-</table>
+---
 
-<hr>
+## 🌐 Compatibilidad
 
-<h2>🚢 Despliegue en Render</h2>
+- ✅ **OpenAI SDK** - Compatible 100%
+- ✅ **Cursor** / **Roo Code** - Soportado
+- ✅ **Streaming** - Habilitado
 
-<ol>
-  <li>Conecta tu repositorio en <a href="https://render.com">Render.com</a></li>
-  <li>Configura:
-    <ul>
-      <li><strong>Build Command:</strong> <code>pip install -r requirements.txt</code></li>
-      <li><strong>Start Command:</strong> <code>gunicorn app:app</code></li>
-    </ul>
-  </li>
-  <li>Agrega variables: <code>DEEPSEEK_TOKEN</code>, <code>DEEPSEEK_COOKIES</code></li>
-</ol>
+**Configuración para Cursor/Roo Code:**
+- Base URL: `https://tu-api.onrender.com/v1`
+- API Key: `sk-dummy`
+- Modelo: `deepseek-reasoner`
 
-<hr>
+---
 
-<h2>📄 Licencia</h2>
-<p>GNU GPL V3 © 2007</p>
+## 🚢 Despliegue
 
-<hr>
+### Render.com
 
-<p align="center">
-  <a href="https://github.com/tu-usuario/deepseek-api">GitHub</a> •
-  <a href="https://render.com">Render</a> •
-  <a href="https://platform.openai.com/docs/api-reference">OpenAI Docs</a>
-</p>
+1. Conecta tu repositorio en [render.com](https://render.com)
+2. Configura:
+   - **Build:** `pip install -r requirements.txt`
+   - **Start:** `gunicorn app:app`
+3. Agrega variables: `DEEPSEEK_TOKEN`, `DEEPSEEK_COOKIES`
+
+---
+
+## 📄 Licencia
+
+GNU GPL v3 © 2007 · [Ver licencia completa](LICENSE)
+
+---
+
+<div align="center">
+
+[GitHub](https://github.com/vm1008079-web/ds-flaskAPI) • [OpenAI Docs](https://platform.openai.com/docs/api-reference)
+
+</div>
