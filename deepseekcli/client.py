@@ -247,8 +247,9 @@ class DeepSeekClient:
         ref_file_ids: Optional[list[str]] = None,
         parent_message_id: Optional[Union[int, str]] = None,
         stream: bool = True,
-        thinking_enabled: bool = True,
-        search_enabled: bool = True,
+        thinking_enabled: bool = True,      # Cambiado a True por defecto
+        search_enabled: bool = True,        # Cambiado a True por defecto
+        # Ahora opcional, se enviará null si es None
         model_type: Optional[str] = None,
         print_output: bool = True,
         on_think_chunk: Optional[Callable[[str], None]] = None,
@@ -265,6 +266,8 @@ class DeepSeekClient:
             try:
                 parent_message_id = int(parent_message_id)
             except (ValueError, TypeError):
+                # Si no se puede convertir, se mantiene como está (podría ser string)
+                # Pero según el log, el servidor espera número, así que mejor lanzar error
                 raise ValueError(
                     f"parent_message_id debe ser un entero o None, recibido: {parent_message_id}")
 
@@ -282,8 +285,8 @@ class DeepSeekClient:
         # Construir payload
         payload = {
             "chat_session_id": session_id,
-            "parent_message_id": parent_message_id,
-            "model_type": model_type,
+            "parent_message_id": parent_message_id,  # None o int
+            "model_type": model_type,                # None o string, se serializa como null
             "prompt": prompt,
             "ref_file_ids": ref_file_ids or [],
             "thinking_enabled": thinking_enabled,
@@ -325,16 +328,10 @@ class DeepSeekClient:
 
         # Enviar petición y procesar stream
         with self._send_request("POST", url, headers=headers, json=payload, stream=stream) as resp:
-            # ============================================================
-            # 🔧 CORRECCIÓN: Procesar líneas correctamente
-            # ============================================================
+            # El stream puede tener eventos SSE (server-sent events)
             for line in resp.iter_lines(decode_unicode=True):
                 if not line:
                     continue
-
-                # 🔧 Asegurar que line es string
-                if isinstance(line, bytes):
-                    line = line.decode('utf-8')
 
                 # Evento "ready" indica que ya tenemos los IDs de mensaje
                 if line.startswith("event: ready"):
