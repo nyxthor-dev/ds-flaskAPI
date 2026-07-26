@@ -41,10 +41,16 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
 
-# CORS
-CORS(app, resources={r"/*": {"origins": "*"}})
+# CORS - Configuración completa para OpenAI
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "Accept"]
+    }
+})
 
-# Importar rutas (después de configurar app)
+# Importar rutas
 try:
     logger.info("Importando rutas...")
     from routes.session import session_bp
@@ -52,9 +58,18 @@ try:
     from routes.upload import upload_bp
     
     app.register_blueprint(session_bp, url_prefix='/api/session')
-    app.register_blueprint(chat_bp, url_prefix='/api/chat')
-    app.register_blueprint(upload_bp, url_prefix='/api/upload')
+    app.register_blueprint(chat_bp, url_prefix='')  # Para /v1/chat/completions
+    app.register_blueprint(upload_bp, url_prefix='')  # Para /v1/files
     logger.info("✅ Rutas registradas correctamente")
+    
+    # Log de rutas disponibles
+    logger.info("📋 Rutas disponibles:")
+    logger.info("   - GET  /api/health")
+    logger.info("   - POST /api/session (legacy)")
+    logger.info("   - POST /v1/chat/completions (OpenAI)")
+    logger.info("   - POST /api/chat (legacy)")
+    logger.info("   - POST /v1/files (OpenAI)")
+    logger.info("   - POST /api/upload (legacy)")
 except Exception as e:
     logger.exception("❌ Error al importar rutas")
     sys.exit(1)
@@ -64,17 +79,34 @@ except Exception as e:
 def health():
     return jsonify({"status": "ok", "service": "deepseek-api"})
 
+# Ruta raíz con información
+@app.route('/')
+def home():
+    return jsonify({
+        "service": "DeepSeek API",
+        "version": "1.0.0",
+        "endpoints": {
+            "health": "/api/health",
+            "openai_chat": "/v1/chat/completions",
+            "openai_files": "/v1/files",
+            "legacy_chat": "/api/chat",
+            "legacy_upload": "/api/upload",
+            "legacy_session": "/api/session"
+        },
+        "docs": "https://platform.openai.com/docs/api-reference"
+    })
+
 # Manejador de errores global
 @app.errorhandler(Exception)
 def handle_error(e):
     logger.exception("Error no capturado")
-    return jsonify({"error": str(e)}), 500
+    return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500
 
 if __name__ == '__main__':
-    # Obtener puerto desde variable de entorno (Render asigna PORT)
     port = int(os.getenv('PORT', 5000))
     logger.info(f"🚀 Iniciando servidor en puerto {port}")
     logger.info(f"   Health check: http://0.0.0.0:{port}/api/health")
+    logger.info(f"   OpenAI Chat:  http://0.0.0.0:{port}/v1/chat/completions")
+    logger.info(f"   OpenAI Files: http://0.0.0.0:{port}/v1/files")
     
-    # Ejecutar con host 0.0.0.0 para que Render pueda acceder
     app.run(host='0.0.0.0', port=port, debug=False)
