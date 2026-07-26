@@ -13,27 +13,31 @@ logger = logging.getLogger(__name__)
 @chat_bp.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
     """
-    Endpoint 100% compatible con OpenAI Chat Completions API.
-    https://platform.openai.com/docs/api-reference/chat
+    Endpoint compatible con DeepSeek (y parcialmente OpenAI).
+    Si model = 'deepseek-reasoner' o se envía 'reasoning_enabled': true,
+    se incluye 'reasoning_content' en la respuesta.
     """
     data = request.get_json()
     if not data:
         return jsonify({"error": {"message": "JSON requerido", "type": "invalid_request_error"}}), 400
 
-    # --- Parámetros OpenAI ---
     messages = data.get('messages', [])
     if not messages:
         return jsonify({"error": {"message": "messages es obligatorio", "type": "invalid_request_error"}}), 400
 
+    # --- Parámetros ---
     model = data.get('model', 'deepseek-chat')
     temperature = data.get('temperature', 0.7)
     max_tokens = data.get('max_tokens', 1000)
     stream = data.get('stream', False)
-    # Otros parámetros opcionales (ignoramos los que no usamos)
-    # seed, user, etc.
+    
+    # Detectar si debemos incluir razonamiento
+    # Si el modelo es 'deepseek-reasoner' o se pasa 'reasoning_enabled': true
+    reasoning_enabled = data.get('reasoning_enabled', False)
+    if 'reasoner' in model.lower():
+        reasoning_enabled = True
 
-    # --- Construir el prompt a partir del historial ---
-    # Reconstruimos todo el diálogo en un solo texto
+    # --- Construir prompt con historial ---
     conversation = ""
     for msg in messages:
         role = msg.get('role')
@@ -44,15 +48,12 @@ def chat_completions():
             conversation += f"Usuario: {content}\n"
         elif role == 'assistant':
             conversation += f"Asistente: {content}\n"
-    # El prompt final es toda la conversación, más la instrucción de responder como asistente
     prompt = conversation + "Asistente:"
 
-    # --- Gestión de sesión (totalmente interna) ---
-    # Creamos una sesión nueva para cada solicitud (o podríamos cachear por usuario)
-    # Esto asegura que no haya contaminación entre peticiones.
+    # --- Crear sesión interna (sin exponer) ---
     session_id = service.create_session()
 
-    # --- Streaming ---
+    # --- Streaming (modo simplificado) ---
     if stream:
         @stream_with_context
         def generate_openai_stream():
@@ -60,16 +61,23 @@ def chat_completions():
             created = int(time.time())
 
             try:
-                # Primer evento (rol)
+                # Evento inicial
                 yield f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
 
+                # Acumular pensamiento y respuesta para streaming (opcional)
+                thinking_chunks = []
                 for event in service.send_message(
                     session_id=session_id,
                     prompt=prompt,
-                    thinking_enabled=False,  # No exponemos el pensamiento
+                    thinking_enabled=reasoning_enabled,
                     search_enabled=True
                 ):
-                    if event['type'] == 'response':
+                    if event['type'] == 'think' and reasoning_enabled:
+                        chunk = event['data']
+                        thinking_chunks.append(chunk)
+                        # Enviar como reasoning_content en el delta (formato DeepSeek)
+                        yield f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {'reasoning_content': chunk}, 'finish_reason': None}]})}\n\n"
+                    elif event['type'] == 'response':
                         chunk = event['data']
                         if chunk == "FINISHED":
                             continue
@@ -91,18 +99,22 @@ def chat_completions():
     # --- No streaming ---
     try:
         respuesta = ""
+        razonamiento = ""
+
         for event in service.send_message(
             session_id=session_id,
             prompt=prompt,
-            thinking_enabled=False,
+            thinking_enabled=reasoning_enabled,
             search_enabled=True
         ):
-            if event['type'] == 'response':
+            if event['type'] == 'think' and reasoning_enabled:
+                razonamiento += event['data']
+            elif event['type'] == 'response':
                 chunk = event['data']
                 if chunk != "FINISHED":
                     respuesta += chunk
 
-        # Respuesta OpenAI estándar (sin campos extras)
+        # Construir la respuesta según el formato deseado
         response = {
             "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
             "object": "chat.completion",
@@ -123,6 +135,10 @@ def chat_completions():
             }
         }
 
+        # Si hay razonamiento, lo incluimos dentro de message
+        if razonamiento:
+            response["choices"][0]["message"]["reasoning_content"] = razonamiento
+
         return jsonify(response), 200
 
     except Exception as e:
@@ -137,19 +153,3 @@ def chat_completions_options():
     response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     return response
-
-
-# ============================================================
-# Endpoint legacy (compatibilidad hacia atrás)
-# ============================================================
-@chat_bp.route('/api/chat', methods=['POST'])
-def send_message_legacy():
-    """Endpoint legacy (se mantiene para no romper integraciones viejas)."""
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "Datos JSON requeridos"}), 400
-    session_id = data.get('session_id')
-    prompt = data.get('prompt')
-    if not session_id or not prompt:
-        return jsonify({"error": "session_id y prompt son obligatorios"}), 400
-    # ... (código legacy, sin cambios)
