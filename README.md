@@ -91,9 +91,13 @@ response = openai.ChatCompletion.create(
 ## 🚢 Despliegue
 
 <details>
-<summary><b>📦 Despliegue en Render.com</b></summary>
+<summary><b>📦 Render.com</b></summary>
 
-![Render Logo](https://img.shields.io/badge/Render-46E3B7?style=for-the-badge&logo=render&logoColor=white)
+<div align="center">
+
+![Render](https://render.com/images/render-logo.png)
+
+</div>
 
 ### Pasos de despliegue:
 
@@ -128,7 +132,13 @@ response = openai.ChatCompletion.create(
 </details>
 
 <details>
-<summary><b>🐳 Despliegue con Docker</b></summary>
+<summary><b>🐳 Docker</b></summary>
+
+<div align="center">
+
+![Docker](https://www.docker.com/wp-content/uploads/2023/08/logo-guide-logos-1.png)
+
+</div>
 
 ### Dockerfile
 
@@ -158,24 +168,134 @@ docker run -p 5000:5000 \
   ds-flaskapi
 ```
 
+### Desplegar en contenedor
+
+```bash
+docker push tu-docker-registry/ds-flaskapi:latest
+```
+
 </details>
 
 <details>
-<summary><b>☁️ Despliegue en Railway/Heroku/Vercel</b></summary>
+<summary><b>☁️ Railway</b></summary>
 
-### Railway
+<div align="center">
+
+![Railway](https://railway.app/brand/logotype-light.png)
+
+</div>
+
+### Despliegue rápido
+
+1. **Conecta tu repositorio**
+   - Ve a [railway.app](https://railway.app)
+   - Autoriza con GitHub
+   - Importa este proyecto
+
+2. **Configura variables**
+   ```
+   DEEPSEEK_TOKEN=tu_token
+   DEEPSEEK_COOKIES=tus_cookies
+   PORT=5000
+   ```
+
+3. **Deploy**
+   ```bash
+   railway link
+   railway up
+   ```
+
+### Características:
+- ⚡ Despliegue instant desde Git
+- 💰 $5 USD crédito inicial
+- 🔄 Auto-deploy en push
+- 📈 Scaling automático
+
+</details>
+
+<details>
+<summary><b>🐘 Heroku</b></summary>
+
+<div align="center">
+
+![Heroku](https://www.herokucdn.com/deploy/button.svg)
+
+</div>
+
+### Instalación de Heroku CLI
 
 ```bash
-railway link
-railway up
+brew install heroku
+heroku login
 ```
 
-Configura las variables de entorno en el dashboard de Railway.
+### Despliegue
 
-### Variables necesarias en cualquier plataforma:
-- `DEEPSEEK_TOKEN`
-- `DEEPSEEK_COOKIES`
-- `PORT` (si es requerido por la plataforma)
+```bash
+heroku create tu-api-name
+git push heroku main
+heroku config:set DEEPSEEK_TOKEN=tu_token
+heroku config:set DEEPSEEK_COOKIES=tus_cookies
+heroku logs --tail
+```
+
+### Archivo necesario (Procfile)
+
+```
+web: gunicorn app:app
+```
+
+### Nota:
+- Heroku descontinuó su plan gratuito en 2022
+- Considera usar Railway o Render como alternativa
+
+</details>
+
+<details>
+<summary><b>🚀 Vercel</b></summary>
+
+<div align="center">
+
+![Vercel](https://assets.vercel.com/image/upload/q_auto/fexpect/logos/vercel/vercel-logotype-dark.png)
+
+</div>
+
+### Configuración para Vercel
+
+1. **Crea vercel.json**
+```json
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "app.py"
+    }
+  ]
+}
+```
+
+2. **Deploy**
+```bash
+npm i -g vercel
+vercel
+```
+
+3. **Variables de entorno en Vercel Dashboard**
+```
+DEEPSEEK_TOKEN
+DEEPSEEK_COOKIES
+```
+
+### Nota:
+- Vercel está optimizado para Next.js/Node
+- Para Python puro, considera Render o Railway
 
 </details>
 
