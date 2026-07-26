@@ -95,7 +95,7 @@ response = openai.ChatCompletion.create(
 
 <div align="center">
 
-![Render](Check out Render brand assets on Zonalogo https://zonalogo.com/render-logo-png-svg)
+![Render](https://dashboard.render.com/)
 
 </div>
 
