@@ -12,7 +12,7 @@ import threading
 import logging
 
 # ============================================================
-#  AGREGAR LA RUTA DE DEEPSEEKCLI AL SYS.PATH
+# AGREGAR LA RUTA DE DEEPSEEKCLI AL SYS.PATH
 # ============================================================
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent
@@ -62,9 +62,9 @@ class DeepSeekService:
                     cookies=cookies,
                     login_dir=login_dir
                 )
-                logger.info("Cliente DeepSeek inicializado correctamente.")
+                logger.info("✅ Cliente DeepSeek inicializado correctamente.")
             except Exception as e:
-                logger.exception("Error al inicializar el cliente DeepSeek")
+                logger.exception("❌ Error al inicializar el cliente DeepSeek")
                 raise
     
     @property
@@ -73,11 +73,23 @@ class DeepSeekService:
     
     def create_session(self) -> str:
         """Crea una nueva sesión de chat."""
-        return self.client.create_chat_session()
+        try:
+            session_id = self.client.create_chat_session()
+            logger.info(f"✅ Sesión creada: {session_id}")
+            return session_id
+        except Exception as e:
+            logger.error(f"❌ Error al crear sesión: {e}")
+            raise
     
     def upload_file(self, file_path: str, thinking: bool = True) -> str:
         """Sube un archivo y devuelve su file_id."""
-        return self.client.upload_file(file_path, thinking_enabled=thinking)
+        try:
+            file_id = self.client.upload_file(file_path, thinking_enabled=thinking)
+            logger.info(f"✅ Archivo subido: {file_id}")
+            return file_id
+        except Exception as e:
+            logger.error(f"❌ Error al subir archivo: {e}")
+            raise
     
     def send_message(
         self,
@@ -96,10 +108,19 @@ class DeepSeekService:
         stop: Optional[List[str]] = None,
         reasoning_effort: str = 'medium'
     ) -> Generator[dict, None, None]:
-        """Envía un mensaje y devuelve un generador de eventos (streaming)."""
+        """
+        Envía un mensaje y devuelve un generador de eventos (streaming).
         
-        logger.info(f"📤 Enviando mensaje: session={session_id}, thinking={thinking_enabled}, search={search_enabled}")
-        logger.info(f"📝 Prompt: {prompt[:100]}...")
+        IMPORTANTE: Los modelos deepseek-chat/deepseek-reasoner son FICTICIOS.
+        Solo controlan los parámetros thinking_enabled y search_enabled.
+        El cliente real NO recibe un modelo específico.
+        """
+        
+        logger.info(f"📤 Enviando mensaje:")
+        logger.info(f"  Session: {session_id}")
+        logger.info(f"  Thinking: {thinking_enabled}")
+        logger.info(f"  Search: {search_enabled}")
+        logger.info(f"  Prompt: {prompt[:100]}...")
         
         queue = Queue()
         
@@ -113,25 +134,19 @@ class DeepSeekService:
         
         def chat_thread():
             try:
-                logger.info("🚀 Iniciando chat...")
+                logger.info("🚀 Iniciando chat con DeepSeek...")
                 
-                # Llamar al cliente DeepSeek con todos los parámetros
+                # EL MODELO NO SE PASA AL CLIENTE
+                # Solo se pasan thinking_enabled y search_enabled
                 think, response, msg_id = self.client.chat(
                     prompt=prompt,
                     session_id=session_id,
                     parent_message_id=parent_message_id,
                     ref_file_ids=ref_file_ids,
                     stream=True,
-                    thinking_enabled=thinking_enabled,
-                    search_enabled=search_enabled,
-                    model_type=model_type,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    top_p=top_p,
-                    presence_penalty=presence_penalty,
-                    frequency_penalty=frequency_penalty,
-                    stop=stop,
-                    reasoning_effort=reasoning_effort,
+                    thinking_enabled=thinking_enabled,  # Activa el razonamiento
+                    search_enabled=search_enabled,      # Activa búsqueda
+                    # NO se pasa model_type
                     print_output=False,
                     on_think_chunk=on_think,
                     on_response_chunk=on_response,
@@ -139,12 +154,14 @@ class DeepSeekService:
                 )
                 
                 logger.info(f"✅ Chat completado. Message ID: {msg_id}")
-                logger.info(f"📊 Think length: {len(think)}, Response length: {len(response)}")
+                logger.info(f"📊 Think length: {len(think)} caracteres")
+                logger.info(f"📊 Response length: {len(response)} caracteres")
                 
-                # Si no hay respuesta, enviar un mensaje de error
+                # Si no hay respuesta, generar mensaje de error
                 if not response and not think:
                     logger.warning("⚠️ Respuesta vacía del modelo")
-                    queue.put(("response", "Lo siento, no pude generar una respuesta. Por favor, intenta de nuevo."))
+                    mensaje_error = "Lo siento, no pude generar una respuesta. Por favor, intenta de nuevo."
+                    queue.put(("response", mensaje_error))
                 
                 queue.put(("done", msg_id))
                 
@@ -156,6 +173,7 @@ class DeepSeekService:
         thread.daemon = True
         thread.start()
         
+        # Generar eventos
         while True:
             event_type, data = queue.get()
             if event_type == "done":
