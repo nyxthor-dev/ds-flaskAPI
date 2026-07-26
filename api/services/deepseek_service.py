@@ -6,7 +6,7 @@ Importa el motor desde la carpeta deepseekcli.
 import sys
 import os
 from pathlib import Path
-from typing import Optional, Generator
+from typing import Optional, Generator, Dict, Any
 from queue import Queue
 import threading
 import logging
@@ -53,6 +53,7 @@ except ImportError as e:
 from utils.env_loader import get_credentials
 
 logger = logging.getLogger(__name__)
+
 
 class DeepSeekService:
     """Servicio singleton para mantener el cliente y sesiones."""
@@ -148,3 +149,74 @@ class DeepSeekService:
                 break
             else:
                 yield {"type": event_type, "data": data}
+    
+    def send_message_raw(
+        self,
+        session_id: str,
+        prompt: str,
+        parent_message_id: Optional[int] = None,
+        ref_file_ids: Optional[list[str]] = None,
+        thinking_enabled: bool = True,
+        search_enabled: bool = True,
+        model_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Envía un mensaje y devuelve la respuesta completa (no streaming).
+        
+        Returns:
+            Dict con 'response', 'thinking', 'message_id'
+        """
+        queue = Queue()
+        response_parts = []
+        think_parts = []
+        message_id = None
+        error = None
+        
+        def on_think(chunk: str):
+            think_parts.append(chunk)
+        
+        def on_response(chunk: str):
+            response_parts.append(chunk)
+        
+        def chat_thread():
+            nonlocal message_id, error
+            try:
+                think, response, msg_id = self.client.chat(
+                    prompt=prompt,
+                    session_id=session_id,
+                    parent_message_id=parent_message_id,
+                    ref_file_ids=ref_file_ids,
+                    stream=True,
+                    thinking_enabled=thinking_enabled,
+                    search_enabled=search_enabled,
+                    model_type=model_type,
+                    print_output=False,
+                    on_think_chunk=on_think,
+                    on_response_chunk=on_response,
+                    save_history=True
+                )
+                message_id = msg_id
+                queue.put(("done", msg_id))
+            except Exception as e:
+                error = str(e)
+                logger.exception("Error en el hilo de chat")
+                queue.put(("error", str(e)))
+        
+        thread = threading.Thread(target=chat_thread)
+        thread.daemon = True
+        thread.start()
+        
+        # Esperar a que termine
+        while True:
+            event_type, data = queue.get()
+            if event_type == "done" or event_type == "error":
+                break
+        
+        if error:
+            raise Exception(error)
+        
+        return {
+            "response": "".join(response_parts),
+            "thinking": "".join(think_parts),
+            "message_id": message_id
+        }
