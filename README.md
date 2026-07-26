@@ -116,7 +116,7 @@ response = openai.ChatCompletion.create(
 <hr>
 
 <h2>📄 Licencia</h2>
-<p>MIT © 2024</p>
+<p>GNU GPL V3 © 2007</p>
 
 <hr>
 
