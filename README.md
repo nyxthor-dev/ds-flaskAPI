@@ -122,7 +122,7 @@ response = openai.ChatCompletion.create(
 
 4. **Deploy**
    - Render desplegará automáticamente cada push a `main`
-   - Tu API estará en: `https://tu-servicio.onrender.com`
+   - Tu API estará en: `https://share.google/h14O93jKqE2pw94Ct`
 
 ### Tips:
 - ⏱️ Los servicios Free se pausan tras 15 min de inactividad
