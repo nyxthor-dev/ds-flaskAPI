@@ -95,7 +95,7 @@ response = openai.ChatCompletion.create(
 
 <div align="center">
 
-![Render](https://render.com/images/render-logo.png)
+![Render Banner](https://cdn.worldvectorlogo.com/logos/render-4.svg)
 
 </div>
 
@@ -136,7 +136,7 @@ response = openai.ChatCompletion.create(
 
 <div align="center">
 
-![Docker](https://www.docker.com/wp-content/uploads/2023/08/logo-guide-logos-1.png)
+![Docker Banner](https://www.docker.com/wp-content/uploads/2023/08/logo-guide-logos-1.png)
 
 </div>
 
@@ -181,7 +181,7 @@ docker push tu-docker-registry/ds-flaskapi:latest
 
 <div align="center">
 
-![Railway](https://railway.app/brand/logotype-light.png)
+![Railway Banner](https://railway.app/brand/logotype-light.png)
 
 </div>
 
@@ -218,7 +218,7 @@ docker push tu-docker-registry/ds-flaskapi:latest
 
 <div align="center">
 
-![Heroku](https://www.herokucdn.com/deploy/button.svg)
+![Heroku Banner](https://brand.heroku.com/static/media/heroku-logo-stroke.22b83966.svg)
 
 </div>
 
@@ -256,7 +256,7 @@ web: gunicorn app:app
 
 <div align="center">
 
-![Vercel](https://assets.vercel.com/image/upload/q_auto/fexpect/logos/vercel/vercel-logotype-dark.png)
+![Vercel Banner](https://assets.vercel.com/image/upload/v1606654385/repositories/next-js/next-logo.png)
 
 </div>
 
