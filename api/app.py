@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
 API REST para DeepSeek con streaming en tiempo real.
+100% compatible con OpenAI y DeepSeek.
 Desplegable en Render.
 """
 
 import os
 import sys
 import logging
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
+import time
 
 # Configurar logging detallado
 logging.basicConfig(
@@ -41,7 +43,9 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
 
+# ============================================================
 # CORS - Configuración completa para OpenAI
+# ============================================================
 CORS(app, resources={
     r"/*": {
         "origins": "*",
@@ -50,63 +54,123 @@ CORS(app, resources={
     }
 })
 
-# Importar rutas
+# ============================================================
+# MIDDLEWARE: Autorización (Acepta cualquier token)
+# ============================================================
+@app.before_request
+def handle_authorization():
+    """
+    Acepta la cabecera Authorization sin validarla.
+    Esto evita que los clientes estándar (OpenAI SDK) fallen.
+    """
+    # Ignoramos OPTIONS (preflight CORS)
+    if request.method == 'OPTIONS':
+        return
+    
+    auth = request.headers.get('Authorization')
+    if auth and auth.startswith('Bearer '):
+        # Aceptamos el token pero no lo validamos
+        # Podríamos extraer el usuario si quisiéramos
+        logger.debug(f"Authorization header recibido: {auth[:20]}...")
+    
+    # Continuar con la petición
+    return None
+
+# ============================================================
+# IMPORTAR RUTAS
+# ============================================================
 try:
     logger.info("Importando rutas...")
     from routes.session import session_bp
     from routes.chat import chat_bp
     from routes.upload import upload_bp
     
-    app.register_blueprint(session_bp, url_prefix='/api/session')
-    app.register_blueprint(chat_bp, url_prefix='')  # Para /v1/chat/completions
-    app.register_blueprint(upload_bp, url_prefix='')  # Para /v1/files
+    # Registrar blueprints con URL prefixes correctos
+    app.register_blueprint(session_bp, url_prefix='/api/session')  # Legacy
+    app.register_blueprint(chat_bp, url_prefix='')  # Para /v1/chat/completions y /api/chat
+    app.register_blueprint(upload_bp, url_prefix='')  # Para /v1/files y /api/upload
+    
     logger.info("✅ Rutas registradas correctamente")
     
     # Log de rutas disponibles
     logger.info("📋 Rutas disponibles:")
-    logger.info("   - GET  /api/health")
-    logger.info("   - POST /api/session (legacy)")
-    logger.info("   - POST /v1/chat/completions (OpenAI)")
-    logger.info("   - POST /api/chat (legacy)")
-    logger.info("   - POST /v1/files (OpenAI)")
-    logger.info("   - POST /api/upload (legacy)")
+    logger.info("   ✅ GET  /api/health")
+    logger.info("   ✅ POST /api/session (legacy)")
+    logger.info("   ✅ POST /v1/chat/completions (OpenAI)")
+    logger.info("   ✅ GET  /v1/models (OpenAI)")
+    logger.info("   ✅ POST /api/chat (legacy)")
+    logger.info("   ✅ POST /v1/files (OpenAI)")
+    logger.info("   ✅ POST /api/upload (legacy)")
+    logger.info("   ✅ GET  / (info)")
+    
 except Exception as e:
     logger.exception("❌ Error al importar rutas")
     sys.exit(1)
 
-# Health check
+# ============================================================
+# ENDPOINTS
+# ============================================================
+
 @app.route('/api/health')
 def health():
-    return jsonify({"status": "ok", "service": "deepseek-api"})
-
-# Ruta raíz con información
-@app.route('/')
-def home():
+    """Health check estándar."""
     return jsonify({
-        "service": "DeepSeek API",
-        "version": "1.0.0",
-        "endpoints": {
-            "health": "/api/health",
-            "openai_chat": "/v1/chat/completions",
-            "openai_files": "/v1/files",
-            "legacy_chat": "/api/chat",
-            "legacy_upload": "/api/upload",
-            "legacy_session": "/api/session"
-        },
-        "docs": "https://platform.openai.com/docs/api-reference"
+        "status": "ok",
+        "service": "deepseek-api",
+        "timestamp": int(time.time())
     })
 
-# Manejador de errores global
+@app.route('/')
+def home():
+    """Información de la API."""
+    return jsonify({
+        "service": "DeepSeek API",
+        "version": "2.0.0",
+        "description": "API 100% compatible con OpenAI y DeepSeek",
+        "endpoints": {
+            "health": "/api/health",
+            "openai": {
+                "chat": "/v1/chat/completions",
+                "models": "/v1/models",
+                "files": "/v1/files"
+            },
+            "legacy": {
+                "chat": "/api/chat",
+                "upload": "/api/upload",
+                "session": "/api/session"
+            }
+        },
+        "docs": "https://platform.openai.com/docs/api-reference",
+        "supported_models": [
+            "deepseek-chat",
+            "deepseek-reasoner"
+        ]
+    })
+
+# ============================================================
+# MANEJADOR DE ERRORES GLOBAL
+# ============================================================
 @app.errorhandler(Exception)
 def handle_error(e):
+    """Manejo de errores en formato OpenAI."""
     logger.exception("Error no capturado")
-    return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500
+    return jsonify({
+        "error": {
+            "message": str(e),
+            "type": "server_error",
+            "code": "internal_error"
+        }
+    }), 500
 
+# ============================================================
+# EJECUCIÓN
+# ============================================================
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     logger.info(f"🚀 Iniciando servidor en puerto {port}")
     logger.info(f"   Health check: http://0.0.0.0:{port}/api/health")
     logger.info(f"   OpenAI Chat:  http://0.0.0.0:{port}/v1/chat/completions")
-    logger.info(f"   OpenAI Files: http://0.0.0.0:{port}/v1/files")
+    logger.info(f"   OpenAI Models: http://0.0.0.0:{port}/v1/models")
+    logger.info(f"   OpenAI Files:  http://0.0.0.0:{port}/v1/files")
     
     app.run(host='0.0.0.0', port=port, debug=False)
