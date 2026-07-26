@@ -1,12 +1,13 @@
 """
 Wrapper del cliente DeepSeek con gestión de sesiones y archivos.
 Importa el motor desde la carpeta deepseekcli.
+100% compatible con OpenAI y DeepSeek.
 """
 
 import sys
 import os
 from pathlib import Path
-from typing import Optional, Generator, Dict, Any
+from typing import Optional, Generator, Dict, Any, List
 from queue import Queue
 import threading
 import logging
@@ -98,13 +99,42 @@ class DeepSeekService:
         session_id: str,
         prompt: str,
         parent_message_id: Optional[int] = None,
-        ref_file_ids: Optional[list[str]] = None,
+        ref_file_ids: Optional[List[str]] = None,
         thinking_enabled: bool = True,
         search_enabled: bool = True,
         model_type: Optional[str] = None,
+        # ============================================================
+        # PARÁMETROS COMPATIBLES CON OPENAI
+        # ============================================================
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+        top_p: float = 1.0,
+        presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        stop: Optional[List[str]] = None,
+        reasoning_effort: str = 'medium'
     ) -> Generator[dict, None, None]:
         """
         Envía un mensaje y devuelve un generador de eventos (streaming).
+        
+        Args:
+            session_id: ID de la sesión
+            prompt: Mensaje del usuario
+            parent_message_id: ID del mensaje padre (opcional)
+            ref_file_ids: IDs de archivos referenciados
+            thinking_enabled: Activar razonamiento
+            search_enabled: Activar búsqueda en internet
+            model_type: Tipo de modelo (opcional)
+            temperature: Creatividad (0-2)
+            max_tokens: Máximo de tokens a generar
+            top_p: Nucleus sampling (0-1)
+            presence_penalty: Penalización por presencia (-2 a 2)
+            frequency_penalty: Penalización por frecuencia (-2 a 2)
+            stop: Secuencias de parada
+            reasoning_effort: Esfuerzo de razonamiento ('low', 'medium', 'high')
+        
+        Yields:
+            Dict con tipo de evento ('think', 'response', 'done', 'error') y datos
         """
         queue = Queue()
         
@@ -116,6 +146,7 @@ class DeepSeekService:
         
         def chat_thread():
             try:
+                # Llamar al cliente DeepSeek con todos los parámetros
                 think, response, msg_id = self.client.chat(
                     prompt=prompt,
                     session_id=session_id,
@@ -125,6 +156,14 @@ class DeepSeekService:
                     thinking_enabled=thinking_enabled,
                     search_enabled=search_enabled,
                     model_type=model_type,
+                    # Parámetros OpenAI/DeepSeek
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    top_p=top_p,
+                    presence_penalty=presence_penalty,
+                    frequency_penalty=frequency_penalty,
+                    stop=stop,
+                    reasoning_effort=reasoning_effort,
                     print_output=False,
                     on_think_chunk=on_think,
                     on_response_chunk=on_response,
@@ -155,10 +194,18 @@ class DeepSeekService:
         session_id: str,
         prompt: str,
         parent_message_id: Optional[int] = None,
-        ref_file_ids: Optional[list[str]] = None,
+        ref_file_ids: Optional[List[str]] = None,
         thinking_enabled: bool = True,
         search_enabled: bool = True,
         model_type: Optional[str] = None,
+        # Parámetros compatibles
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+        top_p: float = 1.0,
+        presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        stop: Optional[List[str]] = None,
+        reasoning_effort: str = 'medium'
     ) -> Dict[str, Any]:
         """
         Envía un mensaje y devuelve la respuesta completa (no streaming).
@@ -190,6 +237,13 @@ class DeepSeekService:
                     thinking_enabled=thinking_enabled,
                     search_enabled=search_enabled,
                     model_type=model_type,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    top_p=top_p,
+                    presence_penalty=presence_penalty,
+                    frequency_penalty=frequency_penalty,
+                    stop=stop,
+                    reasoning_effort=reasoning_effort,
                     print_output=False,
                     on_think_chunk=on_think,
                     on_response_chunk=on_response,
