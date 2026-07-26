@@ -224,7 +224,7 @@ Por favor abre un issue describiendo:
 
 ## Licencia
 
-Este proyecto usa licencia Apache 2.0. Ver [LICENSE](LICENSE) para más detalles.
+Este proyecto usa licencia GNU GPL V3. Ver [LICENSE](LICENSE) para más detalles.
 
 ---
 
