@@ -1,4 +1,4 @@
-# routes/chat.py - Versión final con tool calling real
+# routes/chat.py - Versión final con tool calling real y streaming corregido
 import json
 import logging
 import time
@@ -77,7 +77,6 @@ def chat_completions():
             tool_prompt = build_tool_calls_prompt(messages, tools)
 
             # 2. Enviar a DeepSeek (usando el servicio existente)
-            tool_decision = None
             session_id = service.create_session()
 
             # Recoger la respuesta de DeepSeek (solo para decisión de herramienta)
@@ -183,6 +182,8 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
         return openai_error(message, status_code=502, error_type="server_error")
 
 def _stream_response(completion_id, created, model, prompt, thinking_enabled, search_enabled):
+    """Streaming en formato Server-Sent Events, con el primer chunk incluyendo role + content."""
+
     def sse_chunk(delta: dict, finish_reason=None):
         payload = {
             "id": completion_id,
@@ -195,9 +196,9 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
 
     def generate():
         sent_content = False
+        first_content_chunk = True
         try:
             session_id = service.create_session()
-            yield sse_chunk({"role": "assistant"})
 
             for event in service.send_message(
                 session_id=session_id,
@@ -208,22 +209,32 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
                 if event["type"] == "think":
                     yield sse_chunk({"reasoning_content": event["data"]})
                 elif event["type"] == "response" and event["data"] != "FINISHED":
-                    yield sse_chunk({"content": event["data"]})
+                    if first_content_chunk:
+                        # PRIMER CHUNK: Incluye role + content juntos
+                        yield sse_chunk({"role": "assistant", "content": event["data"]})
+                        first_content_chunk = False
+                    else:
+                        yield sse_chunk({"content": event["data"]})
                     sent_content = True
                 elif event["type"] == "error":
                     logger.error(f"Error del servicio (stream): {event['data']}")
-                    yield sse_chunk({"content": "Lo siento, ocurrió un error."})
+                    if first_content_chunk:
+                        yield sse_chunk({"role": "assistant", "content": "Lo siento, ocurrió un error."})
+                        first_content_chunk = False
+                    else:
+                        yield sse_chunk({"content": "Lo siento, ocurrió un error."})
                     sent_content = True
                     break
 
+            # Si nunca se envió contenido, enviar fallback
             if not sent_content:
-                yield sse_chunk({"content": "Lo siento, no pude generar una respuesta."})
+                yield sse_chunk({"role": "assistant", "content": "Lo siento, no pude generar una respuesta."})
 
             yield sse_chunk({}, finish_reason="stop")
             yield "data: [DONE]\n\n"
         except Exception:
             logger.exception("❌ Error en streaming de chat completions")
-            yield sse_chunk({"content": "Error interno del servidor."})
+            yield sse_chunk({"role": "assistant", "content": "Error interno del servidor."})
             yield sse_chunk({}, finish_reason="stop")
             yield "data: [DONE]\n\n"
 
