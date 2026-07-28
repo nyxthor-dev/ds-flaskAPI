@@ -26,11 +26,26 @@ python app.py
 
 ### Variables de entorno
 
+Copia `.env.example` a `.env` y complétalo. Las más importantes:
+
 ```env
 DEEPSEEK_TOKEN=tu_token
 DEEPSEEK_COOKIES=tu_cookies
+
+# Protege tu API con tu propia key (recomendado en producción)
+API_KEYS=genera-una-key-larga-y-aleatoria
+REQUIRE_API_KEY=true
+
 PORT=5000
 ```
+
+Ver `.env.example` para la lista completa (CORS, rate limiting, logging, concurrencia).
+
+> ⚠️ **Nota importante:** esta API no usa la API oficial de DeepSeek, sino que
+> reproduce su interfaz de chat web mediante credenciales de sesión (token +
+> cookies). Esto puede infringir los Términos de Servicio de DeepSeek y las
+> credenciales pueden expirar o bloquearse. Úsalo bajo tu propio criterio y
+> responsabilidad; para un uso en producción, evalúa la API oficial de DeepSeek.
 
 ---
 
@@ -52,10 +67,24 @@ PORT=5000
 ```bash
 curl -X POST https://tu-api.onrender.com/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer tu_api_key" \
   -d '{
     "model": "deepseek-reasoner",
     "messages": [{"role": "user", "content": "Hola"}],
     "reasoning_enabled": true
+  }'
+```
+
+### Streaming
+
+```bash
+curl -N -X POST https://tu-api.onrender.com/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer tu_api_key" \
+  -d '{
+    "model": "deepseek-chat",
+    "messages": [{"role": "user", "content": "Cuéntame algo"}],
+    "stream": true
   }'
 ```
 
@@ -65,7 +94,7 @@ curl -X POST https://tu-api.onrender.com/v1/chat/completions \
 import openai
 
 openai.api_base = "https://tu-api.onrender.com/v1"
-openai.api_key = "sk-dummy"
+openai.api_key = "tu_api_key"  # el valor que pusiste en API_KEYS
 
 response = openai.ChatCompletion.create(
     model="deepseek-reasoner",
@@ -298,6 +327,17 @@ DEEPSEEK_COOKIES
 - Para Python puro, considera Render o Railway
 
 </details>
+
+---
+
+## 🧪 Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+Los tests mockean el cliente de DeepSeek, así que corren sin credenciales reales ni acceso a red.
 
 ---
 

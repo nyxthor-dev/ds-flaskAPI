@@ -7,6 +7,35 @@ y este proyecto se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [2.1.0] - 2026-07-27
+
+### ✨ Agregado
+- **Autenticación real por API key** (`API_KEYS` + `REQUIRE_API_KEY`) mediante decorador `require_api_key`, con comparación en tiempo constante.
+- **Rate limiting** con Flask-Limiter (`RATE_LIMIT_DEFAULT`, `RATE_LIMIT_STORAGE_URI`), incluyendo handler 429 en formato OpenAI.
+- **Streaming real (SSE)** en `/v1/chat/completions` cuando `stream: true`, aprovechando el generador ya existente en `DeepSeekService.send_message` (antes el README lo anunciaba pero no estaba implementado).
+- **Conteo de tokens con `tiktoken`** (`utils/tokens.py`), con fallback a conteo por palabras si tiktoken no está disponible.
+- **Límite de concurrencia** hacia el backend de DeepSeek vía `threading.Semaphore` (`MAX_CONCURRENT_CHATS`) y timeout configurable (`CHAT_TIMEOUT_SECONDS`) para evitar bloqueos indefinidos.
+- **Config centralizada** en `api/config.py`, con validación de configuración al arranque (`Config.validate()`).
+- **Suite de tests** con `pytest` (`tests/`), mockeando el cliente de DeepSeek — corre sin red ni credenciales reales.
+- `.env.example` y `requirements-dev.txt`.
+
+### 🔒 Seguridad
+- El middleware que aceptaba cualquier Bearer token sin validar fue reemplazado por validación real de API key propia.
+- `EXPOSE_ERROR_DETAILS=false` por defecto: los errores 5xx ya no filtran el mensaje interno de la excepción al cliente.
+- `LOG_PROMPT_CONTENT=false` por defecto: el contenido de prompts/respuestas ya no se loguea salvo que se active explícitamente.
+- CORS configurable por `CORS_ORIGINS` en lugar de `*` fijo.
+
+### 🐛 Correcciones
+- **`api/routes/upload.py`**: el endpoint legacy `POST /api/upload` no tenía cuerpo real (solo un comentario), lo que causaba error 500 en cada llamada. Ahora delega en la implementación estándar.
+- Singleton de `DeepSeekService` ahora usa un lock real (`threading.Lock`) para evitar condiciones de carrera al inicializar el cliente bajo múltiples workers/hilos.
+- `services/deepseek_service.py` ya no usa `print()` para logging; todo pasa por el logger configurado.
+
+### 🔄 Cambios
+- `requirements.txt`: se añaden `Flask-Limiter` y `tiktoken`.
+- Versión de la API actualizada a 2.1.0.
+
+---
+
 ## [2.0.0] - 2026-07-26
 
 ### 🎉 Cambios Principales
