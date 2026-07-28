@@ -36,9 +36,25 @@ def _validate_params(data: dict):
 
 
 def _extract_prompt(messages: list) -> str | None:
+    """
+    Extrae el texto del mensaje del usuario, soportando tanto formato string
+    como el formato moderno de OpenAI con content como array de partes.
+    """
     for msg in reversed(messages):
-        if msg.get("role") == "user":
-            return msg.get("content")
+        content = msg.get("content")
+        if content is None:
+            continue
+        # Si es string, úsalo directamente
+        if isinstance(content, str):
+            return content
+        # Si es lista, extrae el texto de cada parte
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+            if text_parts:
+                return " ".join(text_parts)
     return None
 
 
@@ -56,13 +72,19 @@ def chat_completions():
     if not data:
         return openai_error("Se requiere un cuerpo JSON válido")
 
+    # Roo Code y otras extensiones envían parámetros no soportados;
+    # los eliminamos para evitar excepciones.
+    data.pop("tools", None)
+    data.pop("tool_choice", None)
+    data.pop("response_format", None)
+
     messages = data.get("messages", [])
     if not messages:
         return openai_error("'messages' es obligatorio")
 
     prompt = _extract_prompt(messages)
     if not prompt:
-        return openai_error("No se encontró ningún mensaje con role='user'")
+        return openai_error("No se encontró ningún mensaje con role='user' o contenido válido")
 
     error = _validate_params(data)
     if error:
@@ -150,6 +172,7 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     def generate():
+        sent_content = False
         try:
             session_id = service.create_session()
             yield sse_chunk({"role": "assistant"})
@@ -164,16 +187,22 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
                     yield sse_chunk({"reasoning_content": event["data"]})
                 elif event["type"] == "response" and event["data"] != "FINISHED":
                     yield sse_chunk({"content": event["data"]})
+                    sent_content = True
                 elif event["type"] == "error":
                     logger.error("Error del servicio (stream): %s", event["data"])
-                    yield sse_chunk({}, finish_reason="stop")
-                    yield "data: [DONE]\n\n"
-                    return
+                    yield sse_chunk({"content": "Lo siento, ocurrió un error."})
+                    sent_content = True
+                    break
+
+            # Si nunca se envió contenido, enviamos un mensaje de fallback
+            if not sent_content:
+                yield sse_chunk({"content": "Lo siento, no pude generar una respuesta."})
 
             yield sse_chunk({}, finish_reason="stop")
             yield "data: [DONE]\n\n"
         except Exception:
             logger.exception("❌ Error en streaming de chat completions")
+            yield sse_chunk({"content": "Error interno del servidor."})
             yield sse_chunk({}, finish_reason="stop")
             yield "data: [DONE]\n\n"
 
