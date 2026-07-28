@@ -1,31 +1,29 @@
-"""Conteo de tokens aproximado con tiktoken.
+"""Conteo de tokens SIN dependencias compiladas (nada de tiktoken).
 
-DeepSeek no publica su propio tokenizador vía tiktoken, así que usamos el
-encoding de OpenAI (cl100k_base) como aproximación razonable — mucho más
-fiel que contar palabras con str.split(), y suficiente para reportar 'usage'
-de forma compatible con clientes que esperan ese campo.
+tiktoken requiere compilar una extensión en Rust, lo cual falla en varios
+entornos de build gestionado (p. ej. Render) si no hay toolchain de Rust
+disponible. En su lugar usamos una heurística estándar: para texto en
+inglés/español, 1 token ronda ~4 caracteres, y casi nunca es menos que el
+número de palabras. Tomamos el máximo de ambas estimaciones, que en la
+práctica se acerca bastante al conteo real de BPE sin instalar nada.
 """
 
-import logging
+import re
 
-logger = logging.getLogger(__name__)
-
-try:
-    import tiktoken
-
-    _ENCODING = tiktoken.get_encoding("cl100k_base")
-except Exception:  # pragma: no cover - tiktoken puede fallar al descargar datos
-    logger.warning("tiktoken no disponible, se usará una aproximación por palabras")
-    _ENCODING = None
+_WORD_RE = re.compile(r"\S+")
 
 
 def count_tokens(text: str, model: str | None = None) -> int:
+    """Estimación de tokens sin librerías compiladas.
+
+    No es un conteo exacto (para eso haría falta el tokenizador real de
+    DeepSeek, que no es público), pero es estable, rápida, y suficiente
+    para reportar el campo 'usage' de forma orientativa.
+    """
     if not text:
         return 0
-    if _ENCODING is not None:
-        try:
-            return len(_ENCODING.encode(text))
-        except Exception:
-            logger.debug("Fallo al tokenizar con tiktoken, usando fallback", exc_info=True)
-    # Fallback muy aproximado
-    return max(1, len(text.split()))
+
+    words = len(_WORD_RE.findall(text))
+    chars_estimate = len(text) / 4  # heurística habitual: ~4 caracteres por token
+
+    return max(1, words, round(chars_estimate))
