@@ -1,3 +1,4 @@
+# routes/chat.py - Versión final con tool calling real
 import json
 import logging
 import time
@@ -12,19 +13,24 @@ from utils.auth import require_api_key
 from utils.errors import openai_error
 from utils.tokens import count_tokens
 
+# Importar lógica de herramientas
+from routes.tool_handler import (
+    extract_text_content,
+    build_tool_calls_prompt,
+    parse_tool_decision,
+    build_tool_response
+)
+
 chat_bp = Blueprint("chat", __name__)
 service = DeepSeekService()
 logger = logging.getLogger(__name__)
 
-# Rango válido de parámetros estilo OpenAI (se validan aunque el backend
-# real de DeepSeek no los use todos).
 _PARAM_RANGES = {
     "temperature": (0, 2),
     "top_p": (0, 1),
     "presence_penalty": (-2, 2),
     "frequency_penalty": (-2, 2),
 }
-
 
 def _validate_params(data: dict):
     for name, (lo, hi) in _PARAM_RANGES.items():
@@ -34,71 +40,92 @@ def _validate_params(data: dict):
                 return f"'{name}' debe estar entre {lo} y {hi}"
     return None
 
-
 def _extract_prompt(messages: list) -> str | None:
-    """
-    Extrae el texto del mensaje del usuario, soportando tanto formato string
-    como el formato moderno de OpenAI con content como array de partes.
-    """
+    """Extrae el prompt del último mensaje (user o tool)."""
     for msg in reversed(messages):
-        content = msg.get("content")
-        if content is None:
-            continue
-        # Si es string, úsalo directamente
-        if isinstance(content, str):
-            return content
-        # Si es lista, extrae el texto de cada parte
-        if isinstance(content, list):
-            text_parts = []
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    text_parts.append(part.get("text", ""))
-            if text_parts:
-                return " ".join(text_parts)
+        role = msg.get("role")
+        if role in ("user", "tool"):
+            content = msg.get("content")
+            if content:
+                text = extract_text_content(content)
+                if text:
+                    return text
     return None
-
 
 @chat_bp.route("/v1/chat/completions", methods=["POST"])
 @require_api_key
 @limiter.limit(Config.RATE_LIMIT_DEFAULT)
 def chat_completions():
-    """Endpoint compatible con el formato de chat completions de OpenAI.
-
-    Los modelos 'deepseek-chat' / 'deepseek-reasoner' son FICTICIOS: solo
-    controlan los parámetros thinking_enabled y search_enabled que se le
-    pasan al backend real de DeepSeek.
-    """
     data = request.get_json(silent=True)
     if not data:
         return openai_error("Se requiere un cuerpo JSON válido")
-
-    # Roo Code y otras extensiones envían parámetros no soportados;
-    # los eliminamos para evitar excepciones.
-    data.pop("tools", None)
-    data.pop("tool_choice", None)
-    data.pop("response_format", None)
 
     messages = data.get("messages", [])
     if not messages:
         return openai_error("'messages' es obligatorio")
 
+    model = data.get("model", "deepseek-chat")
+    stream = bool(data.get("stream", False))
+
+    # --- MANEJO DE TOOLS (usando DeepSeek para decidir) ---
+    tools = data.get("tools")
+    if tools:
+        logger.info(f"🔧 Tools detectadas: {[t.get('function', {}).get('name') for t in tools]}")
+
+        try:
+            # 1. Construir prompt para DeepSeek
+            tool_prompt = build_tool_calls_prompt(messages, tools)
+
+            # 2. Enviar a DeepSeek (usando el servicio existente)
+            tool_decision = None
+            session_id = service.create_session()
+
+            # Recoger la respuesta de DeepSeek (solo para decisión de herramienta)
+            response_text = ""
+            for event in service.send_message(
+                session_id=session_id,
+                prompt=tool_prompt,
+                thinking_enabled=False,
+                search_enabled=False,
+            ):
+                if event["type"] == "response" and event["data"] != "FINISHED":
+                    response_text += event["data"]
+                elif event["type"] == "error":
+                    logger.error(f"Error en decisión de herramienta: {event['data']}")
+                    break
+
+            # 3. Parsear la decisión
+            tool_call = parse_tool_decision(response_text)
+            if tool_call:
+                logger.info(f"🔧 DeepSeek decidió usar herramienta: {tool_call['function']['name']}")
+                return build_tool_response(tool_call, model)
+
+            logger.info("🔧 DeepSeek decidió NO usar herramienta, continuando con texto")
+
+        except Exception as e:
+            logger.error(f"❌ Error en tool calling: {e}")
+            # Si falla, continuar con flujo normal
+
+        # Eliminar tools para no interferir con el flujo normal
+        data.pop("tools", None)
+        data.pop("tool_choice", None)
+
+    # --- FLUJO NORMAL (texto) ---
     prompt = _extract_prompt(messages)
     if not prompt:
-        return openai_error("No se encontró ningún mensaje con role='user' o contenido válido")
+        return openai_error("No se encontró contenido en el mensaje")
 
     error = _validate_params(data)
     if error:
         return openai_error(error)
 
-    model = data.get("model", "deepseek-chat")
     thinking_enabled = "reasoner" in model.lower() or data.get("reasoning_enabled") is True
     search_enabled = bool(data.get("search_enabled", False))
-    stream = bool(data.get("stream", False))
 
     if Config.LOG_PROMPT_CONTENT:
-        logger.info("📥 Chat request modelo=%s thinking=%s search=%s prompt=%r", model, thinking_enabled, search_enabled, prompt[:100])
+        logger.info(f"📥 Chat request modelo={model} thinking={thinking_enabled} search={search_enabled} prompt={prompt[:100]}")
     else:
-        logger.info("📥 Chat request modelo=%s thinking=%s search=%s len(prompt)=%d", model, thinking_enabled, search_enabled, len(prompt))
+        logger.info(f"📥 Chat request modelo={model} thinking={thinking_enabled} search={search_enabled} len(prompt)={len(prompt)}")
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
@@ -106,7 +133,6 @@ def chat_completions():
     if stream:
         return _stream_response(completion_id, created, model, prompt, thinking_enabled, search_enabled)
     return _full_response(completion_id, created, model, prompt, thinking_enabled, search_enabled)
-
 
 def _full_response(completion_id, created, model, prompt, thinking_enabled, search_enabled):
     try:
@@ -121,11 +147,10 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
         ):
             if event["type"] == "think":
                 razonamiento += event["data"]
-            elif event["type"] == "response":
-                if event["data"] != "FINISHED":
-                    respuesta += event["data"]
+            elif event["type"] == "response" and event["data"] != "FINISHED":
+                respuesta += event["data"]
             elif event["type"] == "error":
-                logger.error("Error del servicio: %s", event["data"])
+                logger.error(f"Error del servicio: {event['data']}")
                 return openai_error(event["data"], status_code=502, error_type="server_error")
 
         if not respuesta:
@@ -157,10 +182,7 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
         message = str(e) if Config.EXPOSE_ERROR_DETAILS else "Error al generar la respuesta"
         return openai_error(message, status_code=502, error_type="server_error")
 
-
 def _stream_response(completion_id, created, model, prompt, thinking_enabled, search_enabled):
-    """Streaming real en formato Server-Sent Events, como espera el SDK de OpenAI."""
-
     def sse_chunk(delta: dict, finish_reason=None):
         payload = {
             "id": completion_id,
@@ -189,12 +211,11 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
                     yield sse_chunk({"content": event["data"]})
                     sent_content = True
                 elif event["type"] == "error":
-                    logger.error("Error del servicio (stream): %s", event["data"])
+                    logger.error(f"Error del servicio (stream): {event['data']}")
                     yield sse_chunk({"content": "Lo siento, ocurrió un error."})
                     sent_content = True
                     break
 
-            # Si nunca se envió contenido, enviamos un mensaje de fallback
             if not sent_content:
                 yield sse_chunk({"content": "Lo siento, no pude generar una respuesta."})
 
@@ -206,31 +227,18 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
             yield sse_chunk({}, finish_reason="stop")
             yield "data: [DONE]\n\n"
 
-    return Response(generate(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 @chat_bp.route("/v1/chat/completions", methods=["OPTIONS"])
 def chat_completions_options():
     return jsonify({}), 200
 
-
 @chat_bp.route("/v1/models", methods=["GET"])
 @require_api_key
 def list_models():
     models = [
-        {
-            "id": "deepseek-chat",
-            "object": "model",
-            "created": 1700000000,
-            "owned_by": "deepseek",
-            "description": "Modelo base sin razonamiento (thinking_enabled=False)",
-        },
-        {
-            "id": "deepseek-reasoner",
-            "object": "model",
-            "created": 1700000000,
-            "owned_by": "deepseek",
-            "description": "Modelo con razonamiento activado (thinking_enabled=True)",
-        },
+        {"id": "deepseek-chat", "object": "model", "created": 1700000000, "owned_by": "deepseek"},
+        {"id": "deepseek-reasoner", "object": "model", "created": 1700000000, "owned_by": "deepseek"},
     ]
     return jsonify({"object": "list", "data": models}), 200
