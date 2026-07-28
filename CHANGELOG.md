@@ -13,7 +13,7 @@ y este proyecto se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 - **Autenticación real por API key** (`API_KEYS` + `REQUIRE_API_KEY`) mediante decorador `require_api_key`, con comparación en tiempo constante.
 - **Rate limiting** con Flask-Limiter (`RATE_LIMIT_DEFAULT`, `RATE_LIMIT_STORAGE_URI`), incluyendo handler 429 en formato OpenAI.
 - **Streaming real (SSE)** en `/v1/chat/completions` cuando `stream: true`, aprovechando el generador ya existente en `DeepSeekService.send_message` (antes el README lo anunciaba pero no estaba implementado).
-- **Conteo de tokens con `tiktoken`** (`utils/tokens.py`), con fallback a conteo por palabras si tiktoken no está disponible.
+- **Conteo de tokens sin dependencias compiladas** (`utils/tokens.py`): heurística basada en `max(palabras, caracteres/4)`. Se probó `tiktoken` primero pero se descartó por requerir compilar su extensión en Rust, lo que falla en el build de Render.
 - **Límite de concurrencia** hacia el backend de DeepSeek vía `threading.Semaphore` (`MAX_CONCURRENT_CHATS`) y timeout configurable (`CHAT_TIMEOUT_SECONDS`) para evitar bloqueos indefinidos.
 - **Config centralizada** en `api/config.py`, con validación de configuración al arranque (`Config.validate()`).
 - **Suite de tests** con `pytest` (`tests/`), mockeando el cliente de DeepSeek — corre sin red ni credenciales reales.
@@ -31,7 +31,7 @@ y este proyecto se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 - `services/deepseek_service.py` ya no usa `print()` para logging; todo pasa por el logger configurado.
 
 ### 🔄 Cambios
-- `requirements.txt`: se añaden `Flask-Limiter` y `tiktoken`.
+- `requirements.txt`: se añade `Flask-Limiter`.
 - Versión de la API actualizada a 2.1.0.
 
 ---
@@ -202,16 +202,16 @@ La API ahora es totalmente compatible con el SDK de OpenAI y otros clientes que 
 
 ## Próximas Versiones (Roadmap)
 
-### 🎯 v2.1.0 (Previsto)
-- [ ] Rate limiting por usuario
-- [ ] Token counting con tiktoken
-- [ ] Persistencia de archivos
-- [ ] Tests unitarios
-- [ ] OpenAPI/Swagger docs
-- [ ] Thread-safe singleton
+### 🎯 v2.1.0 — ✅ Completado (ver arriba)
+- [x] Rate limiting
+- [x] Token counting (heurística sin dependencias compiladas — tiktoken se descartó por fallar en el build de Render)
+- [x] Tests unitarios
+- [x] Thread-safe singleton
+- [ ] Persistencia de archivos (pendiente)
+- [ ] OpenAPI/Swagger docs (pendiente)
 
 ### 🎯 v3.0.0 (Previsto)
-- [ ] Autenticación y autorización
+- [ ] Autenticación multiusuario con roles/permisos (hoy todas las API keys tienen el mismo nivel de acceso)
 - [ ] Base de datos de sesiones
 - [ ] Caché de respuestas
 - [ ] Métricas y monitoreo
