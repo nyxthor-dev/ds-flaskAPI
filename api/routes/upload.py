@@ -1,33 +1,51 @@
-from flask import Blueprint, request, jsonify
-import tempfile
-import os
-import uuid
 import logging
-from services.deepseek_service import DeepSeekService
+import os
+import tempfile
 
-upload_bp = Blueprint('upload', __name__)
+from flask import Blueprint, jsonify, request
+
+from config import Config
+from extensions import limiter
+from services.deepseek_service import DeepSeekService
+from utils.auth import require_api_key
+from utils.errors import openai_error
+
+upload_bp = Blueprint("upload", __name__)
 service = DeepSeekService()
 logger = logging.getLogger(__name__)
 
+ALLOWED_EXTENSIONS = {".txt", ".pdf", ".md", ".csv", ".json", ".png", ".jpg", ".jpeg"}
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 
-@upload_bp.route('/v1/files', methods=['POST'])
+
+@upload_bp.route("/v1/files", methods=["POST"])
+@require_api_key
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
 def upload_file_openai():
-    """Endpoint 100% compatible con OpenAI Files API."""
-    if 'file' not in request.files:
-        return jsonify({"error": {"message": "No se encontró el archivo", "type": "invalid_request_error"}}), 400
+    """Endpoint compatible con la API de Files de OpenAI."""
+    if "file" not in request.files:
+        return openai_error("No se encontró el archivo")
 
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": {"message": "Nombre de archivo vacío", "type": "invalid_request_error"}}), 400
+    file = request.files["file"]
+    if file.filename == "":
+        return openai_error("Nombre de archivo vacío")
 
-    purpose = request.form.get('purpose', 'assistants')
-    thinking = request.form.get('thinking_enabled', 'true').lower() == 'true'
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return openai_error(f"Extensión no permitida: {ext}")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
-        file.save(tmp.name)
-        tmp_path = tmp.name
+    purpose = request.form.get("purpose", "assistants")
+    thinking = request.form.get("thinking_enabled", "true").lower() == "true"
 
+    tmp_path = None
     try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            file.save(tmp.name)
+            tmp_path = tmp.name
+
+        if os.path.getsize(tmp_path) > MAX_FILE_SIZE:
+            return openai_error(f"El archivo excede el tamaño máximo de {MAX_FILE_SIZE // (1024*1024)} MB")
+
         file_id = service.upload_file(tmp_path, thinking)
 
         response = {
@@ -38,56 +56,42 @@ def upload_file_openai():
             "filename": file.filename,
             "purpose": purpose,
             "status": "processed",
-            "status_details": None
+            "status_details": None,
         }
         return jsonify(response), 200
 
     except Exception as e:
         logger.exception("Error al subir archivo")
-        return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500
+        message = str(e) if Config.EXPOSE_ERROR_DETAILS else "Error al procesar el archivo"
+        return openai_error(message, status_code=502, error_type="server_error")
     finally:
-        try:
-            os.unlink(tmp_path)
-        except:
-            pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
-@upload_bp.route('/v1/files', methods=['GET'])
+@upload_bp.route("/v1/files", methods=["GET"])
+@require_api_key
 def list_files_openai():
-    """Lista archivos (implementación básica)."""
-    # Aquí deberías obtener la lista real de archivos
-    return jsonify({
-        "object": "list",
-        "data": [],
-        "first_id": None,
-        "last_id": None,
-        "has_more": False
-    }), 200
+    """Lista de archivos. NOTA: no hay persistencia real todavía (ver roadmap)."""
+    return jsonify({"object": "list", "data": [], "first_id": None, "last_id": None, "has_more": False}), 200
 
 
-@upload_bp.route('/v1/files/<file_id>', methods=['DELETE'])
+@upload_bp.route("/v1/files/<file_id>", methods=["DELETE"])
+@require_api_key
 def delete_file_openai(file_id):
-    """Elimina un archivo."""
-    return jsonify({
-        "id": file_id,
-        "object": "file",
-        "deleted": True
-    }), 200
+    return jsonify({"id": file_id, "object": "file", "deleted": True}), 200
 
 
-@upload_bp.route('/v1/files', methods=['OPTIONS'])
+@upload_bp.route("/v1/files", methods=["OPTIONS"])
 def upload_file_options():
-    response = jsonify({})
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'POST, GET, DELETE, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-    return response
+    return jsonify({}), 200
 
 
-# ============================================================
-# Endpoint legacy
-# ============================================================
-@upload_bp.route('/api/upload', methods=['POST'])
+@upload_bp.route("/api/upload", methods=["POST"])
+@require_api_key
 def upload_file_legacy():
-    """Legacy (se mantiene)."""
-    # ... sin cambios
+    """Endpoint legacy: delega en la implementación estándar."""
+    return upload_file_openai()
