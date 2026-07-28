@@ -3,94 +3,88 @@ Wrapper del cliente DeepSeek con gestión de sesiones y archivos.
 Importa el motor desde la carpeta deepseekcli.
 """
 
-import sys
-import os
-from pathlib import Path
-from typing import Optional, Generator, Dict, Any, List
-from queue import Queue
-import threading
 import logging
+import os
+import sys
+import threading
+from pathlib import Path
+from queue import Empty, Queue
+from typing import Any, Dict, Generator, List, Optional
 
-# ============================================================
-# AGREGAR LA RUTA DE DEEPSEEKCLI AL SYS.PATH
-# ============================================================
+logger = logging.getLogger(__name__)
+
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent
 
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
-    print(f"✅ Ruta añadida a sys.path: {project_root}")
 
 deepseekcli_path = project_root / "deepseekcli"
 if not deepseekcli_path.exists():
-    raise ImportError(
-        f"No se encontró la carpeta 'deepseekcli' en: {deepseekcli_path}"
-    )
+    raise ImportError(f"No se encontró la carpeta 'deepseekcli' en: {deepseekcli_path}")
 
-print(f"✅ deepseekcli encontrado en: {deepseekcli_path}")
+from deepseekcli import DeepSeekClient  # noqa: E402
 
-try:
-    from deepseekcli import DeepSeekClient
-    print("✅ DeepSeekClient importado correctamente")
-except ImportError as e:
-    print(f"❌ Error al importar DeepSeekClient: {e}")
-    raise
-
-from utils.env_loader import get_credentials
-
-logger = logging.getLogger(__name__)
+from config import Config  # noqa: E402
 
 
 class DeepSeekService:
-    """Servicio singleton para mantener el cliente y sesiones."""
-    
+    """Servicio singleton (thread-safe) para mantener el cliente DeepSeek."""
+
     _instance = None
+    _init_lock = threading.Lock()
     _client = None
-    
+    _chat_semaphore: Optional[threading.Semaphore] = None
+
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._init_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(self):
-        if self._client is None:
+        # Doble check bajo lock: __init__ se llama en cada DeepSeekService(),
+        # pero solo debe inicializar el cliente real una vez.
+        if self._client is not None:
+            return
+        with self._init_lock:
+            if self._client is not None:
+                return
             try:
-                token, cookies = get_credentials()
-                login_dir = Path(os.getenv('DEEPSEEK_LOGIN_DIR', '.login_api'))
-                self._client = DeepSeekClient(
-                    token=token,
-                    cookies=cookies,
-                    login_dir=login_dir
-                )
-                logger.info("✅ Cliente DeepSeek inicializado correctamente.")
-            except Exception as e:
+                token, cookies = Config.DEEPSEEK_TOKEN, Config.DEEPSEEK_COOKIES
+                if not token or not cookies:
+                    raise ValueError("Faltan DEEPSEEK_TOKEN y/o DEEPSEEK_COOKIES")
+                login_dir = Path(Config.DEEPSEEK_LOGIN_DIR)
+                self._client = DeepSeekClient(token=token, cookies=cookies, login_dir=login_dir)
+                self._chat_semaphore = threading.Semaphore(Config.MAX_CONCURRENT_CHATS)
+                logger.info("✅ Cliente DeepSeek inicializado correctamente")
+            except Exception:
                 logger.exception("❌ Error al inicializar el cliente DeepSeek")
                 raise
-    
+
     @property
     def client(self) -> DeepSeekClient:
         return self._client
-    
+
     def create_session(self) -> str:
-        """Crea una nueva sesión de chat."""
         try:
             session_id = self.client.create_chat_session()
-            logger.info(f"✅ Sesión creada: {session_id}")
+            logger.info("✅ Sesión creada: %s", session_id)
             return session_id
-        except Exception as e:
-            logger.error(f"❌ Error al crear sesión: {e}")
+        except Exception:
+            logger.error("❌ Error al crear sesión", exc_info=True)
             raise
-    
+
     def upload_file(self, file_path: str, thinking: bool = True) -> str:
-        """Sube un archivo y devuelve su file_id."""
         try:
             file_id = self.client.upload_file(file_path, thinking_enabled=thinking)
-            logger.info(f"✅ Archivo subido: {file_id}")
+            logger.info("✅ Archivo subido: %s", file_id)
             return file_id
-        except Exception as e:
-            logger.error(f"❌ Error al subir archivo: {e}")
+        except Exception:
+            logger.error("❌ Error al subir archivo", exc_info=True)
             raise
-    
+
     def send_message(
         self,
         session_id: str,
@@ -100,82 +94,70 @@ class DeepSeekService:
         thinking_enabled: bool = True,
         search_enabled: bool = True,
         model_type: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: int = 1000,
-        top_p: float = 1.0,
-        presence_penalty: float = 0.0,
-        frequency_penalty: float = 0.0,
-        stop: Optional[List[str]] = None,
-        reasoning_effort: str = 'medium'
-    ) -> Generator[dict, None, None]:
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Envía un mensaje y devuelve un generador de eventos (streaming interno).
+
+        NOTA: los modelos deepseek-chat/deepseek-reasoner son FICTICIOS a nivel de
+        API pública; aquí solo controlan thinking_enabled y search_enabled. El
+        cliente real de DeepSeek no recibe un "modelo" explícito.
         """
-        Envía un mensaje y devuelve un generador de eventos (streaming).
-        
-        IMPORTANTE: Los modelos deepseek-chat/deepseek-reasoner son FICTICIOS.
-        Solo controlan los parámetros thinking_enabled y search_enabled.
-        El cliente real NO recibe un modelo específico.
-        """
-        
-        logger.info(f"📤 Enviando mensaje:")
-        logger.info(f"  Session: {session_id}")
-        logger.info(f"  Thinking: {thinking_enabled}")
-        logger.info(f"  Search: {search_enabled}")
-        logger.info(f"  Prompt: {prompt[:100]}...")
-        
-        queue = Queue()
-        
+        if Config.LOG_PROMPT_CONTENT:
+            logger.info("📤 session=%s thinking=%s search=%s prompt=%r", session_id, thinking_enabled, search_enabled, prompt[:100])
+        else:
+            logger.info("📤 session=%s thinking=%s search=%s len(prompt)=%d", session_id, thinking_enabled, search_enabled, len(prompt))
+
+        queue: Queue = Queue()
+        acquired = self._chat_semaphore.acquire(timeout=Config.CHAT_TIMEOUT_SECONDS)
+        if not acquired:
+            yield {"type": "error", "data": "Servidor saturado, intenta de nuevo en unos segundos."}
+            return
+
         def on_think(chunk: str):
-            logger.debug(f"🧠 Think: {chunk[:50]}...")
             queue.put(("think", chunk))
-        
+
         def on_response(chunk: str):
-            logger.debug(f"💬 Response: {chunk[:50]}...")
             queue.put(("response", chunk))
-        
+
         def chat_thread():
             try:
-                logger.info("🚀 Iniciando chat con DeepSeek...")
-                
-                # EL MODELO NO SE PASA AL CLIENTE
-                # Solo se pasan thinking_enabled y search_enabled
                 think, response, msg_id = self.client.chat(
                     prompt=prompt,
                     session_id=session_id,
                     parent_message_id=parent_message_id,
                     ref_file_ids=ref_file_ids,
                     stream=True,
-                    thinking_enabled=thinking_enabled,  # Activa el razonamiento
-                    search_enabled=search_enabled,      # Activa búsqueda
-                    # NO se pasa model_type
+                    thinking_enabled=thinking_enabled,
+                    search_enabled=search_enabled,
                     print_output=False,
                     on_think_chunk=on_think,
                     on_response_chunk=on_response,
-                    save_history=True
+                    save_history=True,
                 )
-                
-                logger.info(f"✅ Chat completado. Message ID: {msg_id}")
-                logger.info(f"📊 Think length: {len(think)} caracteres")
-                logger.info(f"📊 Response length: {len(response)} caracteres")
-                
-                # Si no hay respuesta, generar mensaje de error
+                logger.info("✅ Chat completado. Message ID: %s (think=%d chars, response=%d chars)", msg_id, len(think), len(response))
+
                 if not response and not think:
                     logger.warning("⚠️ Respuesta vacía del modelo")
-                    mensaje_error = "Lo siento, no pude generar una respuesta. Por favor, intenta de nuevo."
-                    queue.put(("response", mensaje_error))
-                
+                    queue.put(("response", "Lo siento, no pude generar una respuesta. Por favor, intenta de nuevo."))
+
                 queue.put(("done", msg_id))
-                
             except Exception as e:
                 logger.exception("❌ Error en el hilo de chat")
                 queue.put(("error", str(e)))
-        
-        thread = threading.Thread(target=chat_thread)
-        thread.daemon = True
+            finally:
+                self._chat_semaphore.release()
+
+        thread = threading.Thread(target=chat_thread, daemon=True)
         thread.start()
-        
-        # Generar eventos
+
+        deadline_hit = False
         while True:
-            event_type, data = queue.get()
+            try:
+                event_type, data = queue.get(timeout=Config.CHAT_TIMEOUT_SECONDS)
+            except Empty:
+                deadline_hit = True
+                yield {"type": "error", "data": "Tiempo de espera agotado esperando respuesta del backend."}
+                break
+
             if event_type == "done":
                 yield {"type": "done", "data": data}
                 break
@@ -184,3 +166,6 @@ class DeepSeekService:
                 break
             else:
                 yield {"type": event_type, "data": data}
+
+        if deadline_hit:
+            thread.join(timeout=1)
