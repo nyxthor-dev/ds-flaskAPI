@@ -1,4 +1,4 @@
-# routes/chat.py - Con streaming original restaurado
+# routes/chat.py - Compatibilidad total con RooCode (OpenAI format)
 import json
 import logging
 import time
@@ -13,12 +13,13 @@ from utils.auth import require_api_key
 from utils.errors import openai_error
 from utils.tokens import count_tokens
 
-# Importar lógica de herramientas
+# Importar lógica de herramientas mejorada
 from routes.tool_handler import (
-    extract_text_content,
-    build_tool_calls_prompt,
+    build_full_prompt,
+    build_tool_decision_prompt,
     parse_tool_decision,
-    build_tool_response
+    build_tool_response,
+    has_tool_in_history,
 )
 
 chat_bp = Blueprint("chat", __name__)
@@ -40,18 +41,6 @@ def _validate_params(data: dict):
                 return f"'{name}' debe estar entre {lo} y {hi}"
     return None
 
-def _extract_prompt(messages: list) -> str | None:
-    """Extrae el prompt del último mensaje (user o tool)."""
-    for msg in reversed(messages):
-        role = msg.get("role")
-        if role in ("user", "tool"):
-            content = msg.get("content")
-            if content:
-                text = extract_text_content(content)
-                if text:
-                    return text
-    return None
-
 @chat_bp.route("/v1/chat/completions", methods=["POST"])
 @require_api_key
 @limiter.limit(Config.RATE_LIMIT_DEFAULT)
@@ -67,71 +56,82 @@ def chat_completions():
     model = data.get("model", "deepseek-chat")
     stream = bool(data.get("stream", False))
 
-    # --- MANEJO DE TOOLS (usando DeepSeek para decidir) ---
+    # Validar parámetros de generación
+    error = _validate_params(data)
+    if error:
+        return openai_error(error)
+
+    # --- LÓGICA DE HERRAMIENTAS (tool calling) ---
     tools = data.get("tools")
-    if tools:
-        logger.info(f"🔧 Tools detectadas: {[t.get('function', {}).get('name') for t in tools]}")
+    tool_choice = data.get("tool_choice", "auto")
 
+    # Evitar bucles: si ya hay un mensaje de tipo "tool" en el historial,
+    # asumimos que la herramienta ya se ejecutó y no debemos volver a llamarla.
+    # También si tool_choice es "none", saltamos la decisión.
+    has_tool_result = has_tool_in_history(messages)
+    should_decide_tool = (
+        tools
+        and tool_choice != "none"
+        and not has_tool_result
+    )
+
+    if should_decide_tool:
+        logger.info(f"🔧 Tools disponibles: {[t.get('function', {}).get('name') for t in tools]}")
         try:
-            # 1. Construir prompt para DeepSeek
-            tool_prompt = build_tool_calls_prompt(messages, tools)
+            # 1. Construir prompt especial para decisión de herramienta (incluye historial completo)
+            decision_prompt = build_tool_decision_prompt(messages, tools)
 
-            # 2. Enviar a DeepSeek (usando el servicio existente)
+            # 2. Llamar a DeepSeek para decidir (usando una sesión efímera)
             session_id = service.create_session()
-
-            # Recoger la respuesta de DeepSeek (solo para decisión de herramienta)
-            response_text = ""
+            decision_response = ""
             for event in service.send_message(
                 session_id=session_id,
-                prompt=tool_prompt,
-                thinking_enabled=False,
+                prompt=decision_prompt,
+                thinking_enabled=False,      # No necesitamos razonamiento para decidir
                 search_enabled=False,
             ):
                 if event["type"] == "response" and event["data"] != "FINISHED":
-                    response_text += event["data"]
+                    decision_response += event["data"]
                 elif event["type"] == "error":
                     logger.error(f"Error en decisión de herramienta: {event['data']}")
                     break
 
             # 3. Parsear la decisión
-            tool_call = parse_tool_decision(response_text)
+            tool_call = parse_tool_decision(decision_response)
             if tool_call:
                 logger.info(f"🔧 DeepSeek decidió usar herramienta: {tool_call['function']['name']}")
+                # Devolvemos respuesta con tool_calls (formato OpenAI)
                 return build_tool_response(tool_call, model)
 
-            logger.info("🔧 DeepSeek decidió NO usar herramienta, continuando con texto")
+            logger.info("🔧 DeepSeek decidió NO usar herramienta, continuando con respuesta de texto")
 
         except Exception as e:
             logger.error(f"❌ Error en tool calling: {e}")
-            # Si falla, continuar con flujo normal
+            # Si falla, seguimos con el flujo normal (responder texto)
 
-        # Eliminar tools para no interferir con el flujo normal
-        data.pop("tools", None)
-        data.pop("tool_choice", None)
-
-    # --- FLUJO NORMAL (texto) ---
-    prompt = _extract_prompt(messages)
-    if not prompt:
-        return openai_error("No se encontró contenido en el mensaje")
-
-    error = _validate_params(data)
-    if error:
-        return openai_error(error)
+    # --- FLUJO NORMAL: respuesta de texto ---
+    # Construir prompt con TODO el historial (incluyendo system, user, assistant, tool)
+    full_prompt = build_full_prompt(messages)
+    if not full_prompt.strip():
+        return openai_error("No se encontró contenido en los mensajes")
 
     thinking_enabled = "reasoner" in model.lower() or data.get("reasoning_enabled") is True
     search_enabled = bool(data.get("search_enabled", False))
 
     if Config.LOG_PROMPT_CONTENT:
-        logger.info(f"📥 Chat request modelo={model} thinking={thinking_enabled} search={search_enabled} prompt={prompt[:100]}")
+        logger.info(f"📥 Chat request modelo={model} thinking={thinking_enabled} search={search_enabled} prompt={full_prompt[:200]}...")
     else:
-        logger.info(f"📥 Chat request modelo={model} thinking={thinking_enabled} search={search_enabled} len(prompt)={len(prompt)}")
+        logger.info(f"📥 Chat request modelo={model} thinking={thinking_enabled} search={search_enabled} len(prompt)={len(full_prompt)}")
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
 
     if stream:
-        return _stream_response(completion_id, created, model, prompt, thinking_enabled, search_enabled)
-    return _full_response(completion_id, created, model, prompt, thinking_enabled, search_enabled)
+        return _stream_response(completion_id, created, model, full_prompt, thinking_enabled, search_enabled)
+    else:
+        return _full_response(completion_id, created, model, full_prompt, thinking_enabled, search_enabled)
+
+# ---------- Funciones auxiliares para respuesta completa y streaming ----------
 
 def _full_response(completion_id, created, model, prompt, thinking_enabled, search_enabled):
     try:
@@ -182,8 +182,7 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
         return openai_error(message, status_code=502, error_type="server_error")
 
 def _stream_response(completion_id, created, model, prompt, thinking_enabled, search_enabled):
-    """Streaming ORIGINAL restaurado: primero role, luego contenido, luego stop."""
-    
+    """Streaming con formato OpenAI estándar: role -> contenido -> stop."""
     def sse_chunk(delta: dict, finish_reason=None):
         payload = {
             "id": completion_id,
@@ -198,11 +197,11 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
         sent_content = False
         try:
             session_id = service.create_session()
-            
-            # 1. Enviar role primero (como funcionaba originalmente)
+
+            # 1. Enviar role primero (como espera OpenAI)
             yield sse_chunk({"role": "assistant"})
 
-            # 2. Enviar contenido en chunks
+            # 2. Enviar contenido en trozos
             for event in service.send_message(
                 session_id=session_id,
                 prompt=prompt,
@@ -224,10 +223,10 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
             if not sent_content:
                 yield sse_chunk({"content": "Lo siento, no pude generar una respuesta."})
 
-            # 4. Enviar stop
+            # 4. Finalizar con stop y [DONE]
             yield sse_chunk({}, finish_reason="stop")
             yield "data: [DONE]\n\n"
-            
+
         except Exception:
             logger.exception("❌ Error en streaming de chat completions")
             yield sse_chunk({"content": "Error interno del servidor."})
@@ -237,10 +236,7 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-@chat_bp.route("/v1/chat/completions", methods=["OPTIONS"])
-def chat_completions_options():
-    return jsonify({}), 200
-
+# ---------- Endpoint /v1/models ----------
 @chat_bp.route("/v1/models", methods=["GET"])
 @require_api_key
 def list_models():
@@ -249,3 +245,7 @@ def list_models():
         {"id": "deepseek-reasoner", "object": "model", "created": 1700000000, "owned_by": "deepseek"},
     ]
     return jsonify({"object": "list", "data": models}), 200
+
+@chat_bp.route("/v1/chat/completions", methods=["OPTIONS"])
+def chat_completions_options():
+    return jsonify({}), 200
