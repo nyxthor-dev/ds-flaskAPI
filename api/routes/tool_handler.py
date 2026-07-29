@@ -188,7 +188,7 @@ def build_full_prompt(messages: List[Dict]) -> str:
 # ---------- Decisión de herramientas ----------
 
 def build_tool_decision_prompt(messages: List[Dict], tools: List[Dict]) -> str:
-    """Construye prompt para decisión de herramientas con historial completo."""
+    """Construye un prompt más directo para decisión de herramientas, pidiendo solo JSON."""
     history_prompt = build_full_prompt(messages)
 
     tools_desc = []
@@ -201,17 +201,20 @@ def build_tool_decision_prompt(messages: List[Dict], tools: List[Dict]) -> str:
     tools_text = "\n".join(tools_desc)
 
     instruction = """
-INSTRUCCIONES:
-1. Si necesitas usar una herramienta para responder al usuario, devuelve SOLO un JSON con:
-   {"tool": "nombre_de_la_herramienta", "arguments": {"param1": "valor1", ...}}
-2. Si puedes responder sin herramientas, devuelve SOLO:
-   {"tool": null}
-3. Responde SOLO con el JSON, sin texto adicional.
+INSTRUCCIÓN IMPORTANTE: Debes responder ÚNICAMENTE con un JSON válido. No incluyas texto adicional, ni explicaciones, ni etiquetas.
 
-Ejemplo de JSON para usar herramienta:
-{"tool": "read_file", "arguments": {"path": "archivo.txt"}}
-Ejemplo de JSON para no usar herramienta:
+Si necesitas usar una herramienta, responde con:
+{"tool": "nombre_de_la_herramienta", "arguments": {"param1": "valor1", ...}}
+
+Si no necesitas herramienta, responde con:
 {"tool": null}
+
+EJEMPLOS:
+- Para leer un archivo: {"tool": "read_file", "arguments": {"path": "README.md"}}
+- Para listar archivos: {"tool": "list_files", "arguments": {"path": "."}}
+- Para no usar herramienta: {"tool": null}
+
+Responde SOLO con el JSON, nada más.
 """
 
     full_prompt = f"""Historial de la conversación:
@@ -224,202 +227,86 @@ Herramientas disponibles:
 """
     return full_prompt
 
+# ---------- Fallback para formato RooCode ----------
+
+def parse_roocode_tool_format(text: str) -> Optional[Dict]:
+    """
+    Detecta el formato de RooCode como <nombre_herramienta path="..."> y lo convierte a tool_call.
+    Ejemplos:
+      <read_file path="README.md">
+      <write_file path="file.txt" content="hola">
+      <list_files path=".">
+    """
+    # Buscar etiquetas como <read_file ...>
+    pattern = r'<([a-z_]+)(?:\s+([^>]+))?>'
+    match = re.search(pattern, text)
+    if not match:
+        return None
+    
+    tool_name = match.group(1)
+    attrs_str = match.group(2)
+    
+    # Parsear atributos: path="..." content="..."
+    args = {}
+    if attrs_str:
+        attr_pattern = r'(\w+)\s*=\s*"([^"]*)"'
+        for attr_match in re.finditer(attr_pattern, attrs_str):
+            args[attr_match.group(1)] = attr_match.group(2)
+    
+    # Si no hay argumentos, intentar extraer el contenido entre etiquetas
+    content_match = re.search(r'<{}[^>]*>(.*?)</{}>'.format(tool_name, tool_name), text, re.DOTALL)
+    if content_match and not args:
+        # Si la herramienta espera un solo argumento 'content' o 'path', usamos el contenido
+        args = {"content": content_match.group(1).strip()}
+    
+    if not args:
+        # Si no hay argumentos, usar un valor por defecto
+        args = {"path": "."} if tool_name == "list_files" else {}
+    
+    return {
+        "id": f"call_{uuid.uuid4().hex[:12]}",
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "arguments": json.dumps(args, ensure_ascii=False)
+        }
+    }
+
 def parse_tool_decision(response_text: str) -> Optional[Dict]:
-    """Parsea la respuesta de DeepSeek para extraer la decisión de herramienta."""
+    """
+    Parsea la decisión de herramienta, primero busca JSON, luego fallback a formato RooCode.
+    """
+    # 1. Intentar JSON
     try:
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if not json_match:
-            return None
-
-        data = json.loads(json_match.group())
-        tool_name = data.get("tool")
-        if tool_name is None:
-            return None
-
-        arguments = data.get("arguments", {})
-        if not isinstance(arguments, dict):
-            arguments = {}
-
-        return {
-            "id": f"call_{uuid.uuid4().hex[:12]}",
-            "type": "function",
-            "function": {
-                "name": tool_name,
-                "arguments": json.dumps(arguments, ensure_ascii=False)
-            }
-        }
+        if json_match:
+            data = json.loads(json_match.group())
+            tool_name = data.get("tool")
+            if tool_name is not None:
+                arguments = data.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                return {
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(arguments, ensure_ascii=False)
+                    }
+                }
     except Exception as e:
-        logger.warning(f"⚠️ Error parseando decisión de herramienta: {e}")
-        return None
+        logger.warning(f"⚠️ Error parseando JSON: {e}")
+
+    # 2. Fallback: formato RooCode
+    roo_tool = parse_roocode_tool_format(response_text)
+    if roo_tool:
+        logger.info(f"🔧 Detectado formato RooCode: {roo_tool['function']['name']}")
+        return roo_tool
+
+    return None
 
 def build_tool_response(tool_call: Dict, model: str) -> tuple:
     """Construye respuesta con tool_calls en formato OpenAI."""
-    response = {
-        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [tool_call]
-            },
-            "finish_reason": "tool_calls"
-        }],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0
-        }
-    }
-    return response, 200# routes/tool_handler.py - Manejo de herramientas con historial completo
-import json
-import logging
-import re
-import time
-import uuid
-from typing import Dict, List, Optional, Any
-
-logger = logging.getLogger(__name__)
-
-# ---------- Utilidades de formateo ----------
-
-def extract_text_content(content) -> str:
-    """Extrae texto de content (puede ser string o lista de partes)."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                parts.append(part.get("text", ""))
-        return " ".join(parts)
-    return ""
-
-def has_tool_in_history(messages: List[Dict]) -> bool:
-    """Retorna True si algún mensaje tiene role='tool'."""
-    return any(msg.get("role") == "tool" for msg in messages)
-
-def build_full_prompt(messages: List[Dict]) -> str:
-    """
-    Construye un único prompt de texto a partir de todo el historial de mensajes.
-    Formato legible para DeepSeek:
-      [Sistema]: ...
-      [Usuario]: ...
-      [Asistente]: ...
-      [Resultado de herramienta (ID xxx)]: ...
-    """
-    lines = []
-    for msg in messages:
-        role = msg.get("role", "")
-        content = extract_text_content(msg.get("content", ""))
-        if role == "system":
-            lines.append(f"[Sistema]: {content}")
-        elif role == "user":
-            lines.append(f"[Usuario]: {content}")
-        elif role == "assistant":
-            # Si el asistente tiene tool_calls, lo indicamos en lugar del contenido
-            tool_calls = msg.get("tool_calls")
-            if tool_calls:
-                for tc in tool_calls:
-                    func = tc.get("function", {})
-                    name = func.get("name", "desconocida")
-                    args = func.get("arguments", "{}")
-                    lines.append(f"[Asistente llamó a herramienta '{name}' con argumentos: {args}]")
-            else:
-                lines.append(f"[Asistente]: {content}")
-        elif role == "tool":
-            tool_call_id = msg.get("tool_call_id", "desconocido")
-            lines.append(f"[Resultado de herramienta (ID {tool_call_id})]: {content}")
-        # Otros roles (ej. function) se ignoran
-    return "\n".join(lines)
-
-# ---------- Decisión de herramientas ----------
-
-def build_tool_decision_prompt(messages: List[Dict], tools: List[Dict]) -> str:
-    """
-    Construye un prompt que incluye todo el historial y las herramientas disponibles,
-    pidiendo a DeepSeek que decida si usar alguna y devuelva JSON.
-    """
-    # Primero, el historial completo
-    history_prompt = build_full_prompt(messages)
-
-    # Descripción de herramientas disponibles
-    tools_desc = []
-    for tool in tools:
-        func = tool.get("function", {})
-        name = func.get("name", "unknown")
-        desc = func.get("description", "No description")
-        params = func.get("parameters", {})
-        tools_desc.append(f"- {name}: {desc} (parámetros: {json.dumps(params, ensure_ascii=False)})")
-    tools_text = "\n".join(tools_desc)
-
-    # Instrucciones finales
-    instruction = """
-INSTRUCCIONES:
-1. Si necesitas usar una herramienta para responder al usuario, devuelve SOLO un JSON con:
-   {"tool": "nombre_de_la_herramienta", "arguments": {"param1": "valor1", ...}}
-2. Si puedes responder sin herramientas, devuelve SOLO:
-   {"tool": null}
-3. Responde SOLO con el JSON, sin texto adicional.
-
-Ejemplo de JSON para usar herramienta:
-{"tool": "read_file", "arguments": {"path": "archivo.txt"}}
-Ejemplo de JSON para no usar herramienta:
-{"tool": null}
-"""
-
-    full_prompt = f"""Historial de la conversación:
-{history_prompt}
-
-Herramientas disponibles:
-{tools_text}
-
-{instruction}
-"""
-    return full_prompt
-
-def parse_tool_decision(response_text: str) -> Optional[Dict]:
-    """
-    Parsea la respuesta de DeepSeek para extraer la decisión de herramienta.
-    Retorna un tool_call en formato OpenAI si se decidió usar herramienta,
-    o None si no.
-    """
-    try:
-        # Buscar el primer JSON en la respuesta
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if not json_match:
-            return None
-
-        data = json.loads(json_match.group())
-        tool_name = data.get("tool")
-        if tool_name is None:
-            return None
-
-        arguments = data.get("arguments", {})
-        # Asegurar que arguments sea un dict
-        if not isinstance(arguments, dict):
-            arguments = {}
-
-        return {
-            "id": f"call_{uuid.uuid4().hex[:12]}",
-            "type": "function",
-            "function": {
-                "name": tool_name,
-                "arguments": json.dumps(arguments, ensure_ascii=False)
-            }
-        }
-    except Exception as e:
-        logger.warning(f"⚠️ Error parseando decisión de herramienta: {e}")
-        return None
-
-def build_tool_response(tool_call: Dict, model: str) -> tuple:
-    """
-    Construye una respuesta completa con tool_calls (formato OpenAI).
-    Retorna (response_dict, status_code).
-    """
     response = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
