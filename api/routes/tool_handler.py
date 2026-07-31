@@ -71,11 +71,22 @@ def normalize_tool_calls(message: Dict) -> Dict:
     
     return message
 
-def normalize_tool_result(message: Dict) -> Dict:
-    """Convierte tool_result de RooCode a role:tool de OpenAI."""
+def normalize_tool_result(message: Dict) -> Union[Dict, List[Dict]]:
+    """Convierte tool_result de RooCode a role:tool de OpenAI.
+
+    Un mensaje 'user' de Anthropic/RooCode puede mezclar varios
+    tool_result y/o texto en la misma lista de content. Antes solo se
+    procesaba el primer tool_result encontrado y se descartaba todo lo
+    demás (incluido texto del usuario). Ahora se devuelven TODOS los
+    mensajes resultantes: uno role:tool por cada tool_result, y un
+    mensaje role:user si además hay texto suelto.
+    """
     content = message.get("content", [])
     if not isinstance(content, list):
         return message
+
+    tool_messages = []
+    text_parts = []
 
     for part in content:
         if isinstance(part, dict) and part.get("type") == "tool_result":
@@ -88,14 +99,25 @@ def normalize_tool_result(message: Dict) -> Dict:
                         text_result += item.get("text", "")
             elif isinstance(result_content, str):
                 text_result = result_content
-            
-            return {
+
+            tool_messages.append({
                 "role": "tool",
                 "tool_call_id": tool_use_id,
                 "content": text_result
-            }
-    
-    return message
+            })
+        elif isinstance(part, dict) and part.get("type") == "text":
+            text_parts.append(part.get("text", ""))
+        elif isinstance(part, str):
+            text_parts.append(part)
+
+    if not tool_messages:
+        # No había tool_result: devolver el mensaje sin tocar.
+        return message
+
+    result: List[Dict] = list(tool_messages)
+    if text_parts:
+        result.append({"role": "user", "content": " ".join(text_parts)})
+    return result
 
 def normalize_messages(messages: List[Dict]) -> List[Dict]:
     """Normaliza todos los mensajes al formato OpenAI estándar."""
@@ -106,11 +128,13 @@ def normalize_messages(messages: List[Dict]) -> List[Dict]:
             normalized_msg = normalize_tool_calls(msg)
         elif role == "user":
             normalized_msg = normalize_tool_result(msg)
-            if normalized_msg.get("role") == "user":
-                normalized_msg = msg
         else:
             normalized_msg = msg
-        normalized.append(normalized_msg)
+
+        if isinstance(normalized_msg, list):
+            normalized.extend(normalized_msg)
+        else:
+            normalized.append(normalized_msg)
     return normalized
 
 def has_tool_in_history(messages: List[Dict]) -> bool:
@@ -281,30 +305,69 @@ def parse_natural_language_tool(text: str) -> Optional[Dict]:
         }
     }
 
+def _extract_balanced_json_objects(text: str) -> List[str]:
+    """Extrae todas las subcadenas que son objetos JSON '{...}' balanceados,
+    respetando llaves dentro de strings. Evita el problema del regex
+    greedy '\\{.*\\}' que capturaba de más (o de menos) cuando el modelo
+    agregaba texto antes/después del JSON o había varios objetos.
+    """
+    objects = []
+    depth = 0
+    start = None
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    objects.append(text[start:i + 1])
+                    start = None
+    return objects
+
 def parse_tool_decision(response_text: str) -> Optional[Dict]:
     """
     Intenta parsear la decisión de herramienta en tres formatos: JSON, XML de RooCode y lenguaje natural.
     """
-    # 1. JSON
-    try:
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            tool_name = data.get("tool")
-            if tool_name is not None:
-                arguments = data.get("arguments", {})
-                if not isinstance(arguments, dict):
-                    arguments = {}
-                return {
-                    "id": f"call_{uuid.uuid4().hex[:12]}",
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": json.dumps(arguments, ensure_ascii=False)
-                    }
-                }
-    except Exception as e:
-        logger.warning(f"⚠️ Error parseando JSON: {e}")
+    # 1. JSON (busca objetos balanceados; si hay varios, usa el primero
+    # que tenga la clave "tool")
+    for candidate in _extract_balanced_json_objects(response_text):
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        if not isinstance(data, dict) or "tool" not in data:
+            continue
+        tool_name = data.get("tool")
+        if tool_name is None:
+            # {"tool": null} explícito: el modelo decidió no usar herramienta.
+            return None
+        arguments = data.get("arguments", {})
+        if not isinstance(arguments, dict):
+            arguments = {}
+        return {
+            "id": f"call_{uuid.uuid4().hex[:12]}",
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": json.dumps(arguments, ensure_ascii=False)
+            }
+        }
 
     # 2. XML de RooCode
     roo_tool = parse_roocode_tool_format(response_text)
@@ -320,7 +383,7 @@ def parse_tool_decision(response_text: str) -> Optional[Dict]:
 
     return None
 
-def build_tool_response(tool_call: Dict, model: str) -> tuple:
+def build_tool_response(tool_call: Dict, model: str, prompt_tokens: int = 0, completion_tokens: int = 0) -> tuple:
     """Construye respuesta con tool_calls en formato OpenAI."""
     response = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
@@ -337,9 +400,71 @@ def build_tool_response(tool_call: Dict, model: str) -> tuple:
             "finish_reason": "tool_calls"
         }],
         "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens
         }
     }
     return response, 200
+
+def build_tool_response_stream_chunks(tool_call: Dict, model: str, completion_id: str, created: int) -> List[str]:
+    """Construye los chunks SSE (formato OpenAI) para una respuesta de tool_calls
+    cuando el cliente pidió stream=true. Sin esto, un cliente que pide streaming
+    y recibe un JSON completo con Content-Type application/json puede fallar al
+    parsear la respuesta como eventos SSE.
+    """
+    def sse(payload: dict) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    base = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+    }
+
+    chunks = []
+    # Primer chunk: rol + inicio de tool_call (id, type, name)
+    chunks.append(sse({
+        **base,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "index": 0,
+                    "id": tool_call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tool_call["function"]["name"],
+                        "arguments": ""
+                    }
+                }]
+            },
+            "finish_reason": None
+        }]
+    }))
+    # Segundo chunk: argumentos completos (delta incremental)
+    chunks.append(sse({
+        **base,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "function": {
+                        "arguments": tool_call["function"]["arguments"]
+                    }
+                }]
+            },
+            "finish_reason": None
+        }]
+    }))
+    # Chunk final: finish_reason
+    chunks.append(sse({
+        **base,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
+    }))
+    chunks.append("data: [DONE]\n\n")
+    return chunks
