@@ -3,6 +3,7 @@ import json
 import logging
 import time
 import uuid
+from typing import Optional
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -20,6 +21,7 @@ from routes.tool_handler import (
     build_tool_decision_prompt,
     parse_tool_decision,
     build_tool_response,
+    build_tool_response_stream_chunks,
     has_tool_in_history,
 )
 
@@ -40,7 +42,70 @@ def _validate_params(data: dict):
             value = data[name]
             if not isinstance(value, (int, float)) or not (lo <= value <= hi):
                 return f"'{name}' debe estar entre {lo} y {hi}"
+
+    max_tokens = data.get("max_tokens", data.get("max_completion_tokens"))
+    if max_tokens is not None:
+        if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+            return "'max_tokens' debe ser un entero positivo"
+
+    stop = data.get("stop")
+    if stop is not None:
+        if isinstance(stop, str):
+            pass
+        elif isinstance(stop, list):
+            if len(stop) > 4 or not all(isinstance(s, str) for s in stop):
+                return "'stop' debe ser un string o una lista de hasta 4 strings"
+        else:
+            return "'stop' debe ser un string o una lista de strings"
+
     return None
+
+def _get_stop_sequences(data: dict) -> list:
+    stop = data.get("stop")
+    if stop is None:
+        return []
+    if isinstance(stop, str):
+        return [stop]
+    return list(stop)
+
+def _apply_stop_and_truncate(text: str, stop_sequences: list, max_tokens: Optional[int], model: str):
+    """Aplica stop sequences (corta el texto en la primera que aparezca) y
+    trunca por max_tokens (aproximado, vía count_tokens). Devuelve
+    (texto_final, finish_reason) donde finish_reason es 'stop', 'length' o None
+    (None = terminó naturalmente, se debe usar 'stop' igualmente aguas arriba).
+    """
+    finish_reason = None
+
+    earliest_idx = None
+    for seq in stop_sequences:
+        if not seq:
+            continue
+        idx = text.find(seq)
+        if idx != -1 and (earliest_idx is None or idx < earliest_idx):
+            earliest_idx = idx
+    if earliest_idx is not None:
+        text = text[:earliest_idx]
+        finish_reason = "stop"
+
+    if max_tokens is not None:
+        # Truncado aproximado: recorta por caracteres usando la misma
+        # heurística de count_tokens (no es exacto, pero es consistente
+        # con el 'usage' reportado).
+        approx_chars_per_token = 4
+        max_chars = max_tokens * approx_chars_per_token
+        if len(text) > max_chars or count_tokens(text, model) > max_tokens:
+            # Recorte progresivo simple hasta caer bajo el límite
+            words = text.split(" ")
+            truncated = []
+            for w in words:
+                candidate = " ".join(truncated + [w])
+                if count_tokens(candidate, model) > max_tokens:
+                    break
+                truncated.append(w)
+            text = " ".join(truncated)
+            finish_reason = "length"
+
+    return text, finish_reason
 
 @chat_bp.route("/v1/chat/completions", methods=["POST"])
 @require_api_key
@@ -106,7 +171,22 @@ def chat_completions():
             tool_call = parse_tool_decision(decision_response)
             if tool_call:
                 logger.info(f"🔧 DeepSeek decidió usar herramienta: {tool_call['function']['name']}")
-                return build_tool_response(tool_call, model)
+                prompt_tokens = count_tokens(decision_prompt, model)
+                completion_tokens = count_tokens(decision_response, model)
+                if stream:
+                    completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+                    created = int(time.time())
+                    chunks = build_tool_response_stream_chunks(tool_call, model, completion_id, created)
+                    return Response(
+                        (c for c in chunks),
+                        mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                    )
+                return build_tool_response(
+                    tool_call, model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
 
             logger.info("🔧 DeepSeek decidió NO usar herramienta")
 
@@ -122,6 +202,11 @@ def chat_completions():
     thinking_enabled = "reasoner" in model.lower() or data.get("reasoning_enabled") is True
     search_enabled = bool(data.get("search_enabled", False))
 
+    max_tokens = data.get("max_tokens", data.get("max_completion_tokens"))
+    stop_sequences = _get_stop_sequences(data)
+    stream_options = data.get("stream_options") or {}
+    include_usage = bool(stream_options.get("include_usage", False))
+
     if Config.LOG_PROMPT_CONTENT:
         logger.info(f"📥 Prompt completo: {full_prompt[:200]}...")
     else:
@@ -131,13 +216,21 @@ def chat_completions():
     created = int(time.time())
 
     if stream:
-        return _stream_response(completion_id, created, model, full_prompt, thinking_enabled, search_enabled)
+        return _stream_response(
+            completion_id, created, model, full_prompt, thinking_enabled, search_enabled,
+            stop_sequences=stop_sequences, max_tokens=max_tokens, include_usage=include_usage,
+        )
     else:
-        return _full_response(completion_id, created, model, full_prompt, thinking_enabled, search_enabled)
+        return _full_response(
+            completion_id, created, model, full_prompt, thinking_enabled, search_enabled,
+            stop_sequences=stop_sequences, max_tokens=max_tokens,
+        )
 
 # ---------- Funciones auxiliares (sin cambios) ----------
 
-def _full_response(completion_id, created, model, prompt, thinking_enabled, search_enabled):
+def _full_response(completion_id, created, model, prompt, thinking_enabled, search_enabled,
+                    stop_sequences=None, max_tokens=None):
+    stop_sequences = stop_sequences or []
     try:
         session_id = service.create_session()
         respuesta, razonamiento = "", ""
@@ -159,6 +252,9 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
         if not respuesta:
             respuesta = "Lo siento, no pude generar una respuesta. Por favor, intenta de nuevo."
 
+        respuesta, truncation_reason = _apply_stop_and_truncate(respuesta, stop_sequences, max_tokens, model)
+        finish_reason = truncation_reason or "stop"
+
         prompt_tokens = count_tokens(prompt, model)
         completion_tokens = count_tokens(respuesta, model)
 
@@ -171,7 +267,12 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
             "object": "chat.completion",
             "created": created,
             "model": model,
-            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+            "choices": [{
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason,
+                "logprobs": None,
+            }],
             "usage": {
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
@@ -185,20 +286,40 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
         message = str(e) if Config.EXPOSE_ERROR_DETAILS else "Error al generar la respuesta"
         return openai_error(message, status_code=502, error_type="server_error")
 
-def _stream_response(completion_id, created, model, prompt, thinking_enabled, search_enabled):
+def _stream_response(completion_id, created, model, prompt, thinking_enabled, search_enabled,
+                      stop_sequences=None, max_tokens=None, include_usage=False):
     """Streaming con formato OpenAI estándar."""
-    def sse_chunk(delta: dict, finish_reason=None):
+    stop_sequences = stop_sequences or []
+
+    def sse_chunk(delta: dict, finish_reason=None, logprobs=None):
         payload = {
             "id": completion_id,
             "object": "chat.completion.chunk",
             "created": created,
             "model": model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason, "logprobs": logprobs}],
+        }
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def sse_usage_chunk(prompt_tokens: int, completion_tokens: int):
+        payload = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            },
         }
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     def generate():
         sent_content = False
+        full_text = ""
+        finish_reason = "stop"
         try:
             session_id = service.create_session()
 
@@ -213,7 +334,36 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
                 if event["type"] == "think":
                     yield sse_chunk({"reasoning_content": event["data"]})
                 elif event["type"] == "response" and event["data"] != "FINISHED":
-                    yield sse_chunk({"content": event["data"]})
+                    chunk_text = event["data"]
+
+                    # Buscar si alguna stop sequence aparece en lo acumulado + este chunk
+                    combined = full_text + chunk_text
+                    cut_at = None
+                    for seq in stop_sequences:
+                        if not seq:
+                            continue
+                        idx = combined.find(seq)
+                        if idx != -1 and (cut_at is None or idx < cut_at):
+                            cut_at = idx
+
+                    if cut_at is not None:
+                        # Solo emitir la parte antes del stop, y cortar el stream aquí
+                        remaining_to_emit = combined[len(full_text):cut_at]
+                        if remaining_to_emit:
+                            yield sse_chunk({"content": remaining_to_emit})
+                            sent_content = True
+                        full_text = combined[:cut_at]
+                        finish_reason = "stop"
+                        break
+
+                    full_text = combined
+                    if max_tokens is not None and count_tokens(full_text, model) >= max_tokens:
+                        yield sse_chunk({"content": chunk_text})
+                        sent_content = True
+                        finish_reason = "length"
+                        break
+
+                    yield sse_chunk({"content": chunk_text})
                     sent_content = True
                 elif event["type"] == "error":
                     logger.error(f"Error del servicio (stream): {event['data']}")
@@ -224,7 +374,13 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
             if not sent_content:
                 yield sse_chunk({"content": "Lo siento, no pude generar una respuesta."})
 
-            yield sse_chunk({}, finish_reason="stop")
+            yield sse_chunk({}, finish_reason=finish_reason)
+
+            if include_usage:
+                prompt_tokens = count_tokens(prompt, model)
+                completion_tokens = count_tokens(full_text, model)
+                yield sse_usage_chunk(prompt_tokens, completion_tokens)
+
             yield "data: [DONE]\n\n"
 
         except Exception:
