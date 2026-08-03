@@ -100,26 +100,18 @@ class DeepSeekService:
         def worker():
             try:
                 result = target_func(*args, **kwargs)
-                # El cliente devuelve tuplas; desempaquetamos según el método
+                # El cliente devuelve tuplas; desempaquetamos según el método.
+                # NOTA: think/response YA se enviaron a la cola en tiempo real
+                # a través de los callbacks on_think_chunk/on_response_chunk
+                # (ver send_message/regenerate_message/continue_message más
+                # abajo). Reenviarlos aquí de nuevo duplicaría todo el texto.
+                # Solo queda comunicar que terminó, con el id del mensaje.
                 if isinstance(result, tuple):
                     if len(result) == 4:  # (think, response, msg_id, is_incomplete)
-                        think, response, msg_id, is_incomplete = result
-                        # Reconstruir chunks para que el generador los sirva
-                        if think:
-                            for line in think.splitlines(keepends=True):
-                                queue.put(("think", line))
-                        if response:
-                            for line in response.splitlines(keepends=True):
-                                queue.put(("response", line))
+                        _think, _response, msg_id, is_incomplete = result
                         queue.put(("done", {"msg_id": msg_id, "is_incomplete": is_incomplete}))
                     elif len(result) == 3:  # (think, response, msg_id) — legacy
-                        think, response, msg_id = result
-                        if think:
-                            for line in think.splitlines(keepends=True):
-                                queue.put(("think", line))
-                        if response:
-                            for line in response.splitlines(keepends=True):
-                                queue.put(("response", line))
+                        _think, _response, msg_id = result
                         queue.put(("done", {"msg_id": msg_id, "is_incomplete": False}))
                     else:
                         queue.put(("error", f"Formato de respuesta inesperado: {result}"))
@@ -196,6 +188,9 @@ class DeepSeekService:
         def on_response(chunk: str):
             queue.put(("response", chunk))
 
+        def on_msg_id(msg_id: int):
+            queue.put(("msg_id", msg_id))
+
         def target():
             return self.client.chat(
                 prompt=prompt,
@@ -208,6 +203,7 @@ class DeepSeekService:
                 print_output=False,
                 on_think_chunk=on_think,
                 on_response_chunk=on_response,
+                on_message_id=on_msg_id,
                 save_history=True,
             )
 
@@ -241,6 +237,9 @@ class DeepSeekService:
         def on_response(chunk: str):
             queue.put(("response", chunk))
 
+        def on_msg_id(msg_id: int):
+            queue.put(("msg_id", msg_id))
+
         def target():
             return self.client.regenerate(
                 session_id=session_id,
@@ -252,6 +251,7 @@ class DeepSeekService:
                 print_output=False,
                 on_think_chunk=on_think,
                 on_response_chunk=on_response,
+                on_message_id=on_msg_id,
                 save_history=True,
             )
 
@@ -297,6 +297,9 @@ class DeepSeekService:
         def on_response(chunk: str):
             queue.put(("response", chunk))
 
+        def on_msg_id(msg_id: int):
+            queue.put(("msg_id", msg_id))
+
         def target():
             return self.client.continue_generation(
                 session_id=session_id,
@@ -306,6 +309,7 @@ class DeepSeekService:
                 print_output=False,
                 on_think_chunk=on_think,
                 on_response_chunk=on_response,
+                on_message_id=on_msg_id,
                 save_history=False,
             )
 
