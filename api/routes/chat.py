@@ -379,6 +379,49 @@ def api_continue():
 # FUNCIONES AUXILIARES GENÉRICAS
 # ============================================================
 
+def _stream_response(
+    completion_id, created, model, prompt, thinking_enabled, search_enabled,
+    stop_sequences=None, max_tokens=None, include_usage=False,
+    session_id=None, parent_message_id=None,
+):
+    """Punto de entrada de /v1/chat/completions con stream=True.
+    Crea sesión si hace falta y delega el renderizado SSE a _stream_events.
+    """
+    sid = session_id or service.create_session()
+    event_generator = service.send_message(
+        session_id=sid,
+        prompt=prompt,
+        parent_message_id=parent_message_id,
+        thinking_enabled=thinking_enabled,
+        search_enabled=search_enabled,
+    )
+    return _stream_events(
+        completion_id, created, model, event_generator,
+        stop_sequences=stop_sequences, max_tokens=max_tokens,
+        include_usage=include_usage, session_id=sid,
+    )
+
+def _full_response(
+    completion_id, created, model, prompt, thinking_enabled, search_enabled,
+    stop_sequences=None, max_tokens=None,
+    session_id=None, parent_message_id=None,
+):
+    """Punto de entrada de /v1/chat/completions con stream=False.
+    Crea sesión si hace falta y delega el JSON final a _full_events.
+    """
+    sid = session_id or service.create_session()
+    event_generator = service.send_message(
+        session_id=sid,
+        prompt=prompt,
+        parent_message_id=parent_message_id,
+        thinking_enabled=thinking_enabled,
+        search_enabled=search_enabled,
+    )
+    return _full_events(
+        completion_id, created, model, event_generator,
+        stop_sequences=stop_sequences, max_tokens=max_tokens, session_id=sid,
+    )
+
 def _full_events(
     completion_id, created, model, event_generator,
     stop_sequences=None, max_tokens=None, session_id=None,
