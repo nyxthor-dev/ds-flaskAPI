@@ -329,15 +329,21 @@ class DeepSeekClient:
                         fid = frag["id"]
                         ftype = frag["type"]
                         content = frag.get("content") or ""
+                        prev = fragments.get(fid, {}).get("content") or ""
+                        # DeepSeek a veces reenvía el snapshot completo del
+                        # fragmento (no solo el delta). Solo emitimos la
+                        # parte nueva respecto a lo ya recibido, si no se
+                        # duplica el texto entero.
+                        delta = content[len(prev):] if content.startswith(prev) else content
                         fragments[fid] = {
                             "type": ftype, "content": content}
-                        if content:
+                        if delta:
                             if ftype == "THINK":
-                                print_think(content)
-                                think_full.append(content)
+                                print_think(delta)
+                                think_full.append(delta)
                             elif ftype == "RESPONSE":
-                                print_response(content)
-                                response_full.append(content)
+                                print_response(delta)
+                                response_full.append(delta)
                         if ftype in {"THINK", "RESPONSE"}:
                             current_fragment_id = fid
 
@@ -348,15 +354,17 @@ class DeepSeekClient:
                         fid = frag["id"]
                         ftype = frag["type"]
                         content = frag.get("content") or ""
+                        prev = fragments.get(fid, {}).get("content") or ""
+                        delta = content[len(prev):] if content.startswith(prev) else content
                         fragments[fid] = {
                             "type": ftype, "content": content}
-                        if content:
+                        if delta:
                             if ftype == "THINK":
-                                print_think(content)
-                                think_full.append(content)
+                                print_think(delta)
+                                think_full.append(delta)
                             elif ftype == "RESPONSE":
-                                print_response(content)
-                                response_full.append(content)
+                                print_response(delta)
+                                response_full.append(delta)
                         if ftype in {"THINK", "RESPONSE"}:
                             current_fragment_id = fid
 
