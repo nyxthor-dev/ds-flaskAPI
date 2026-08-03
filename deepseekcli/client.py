@@ -246,6 +246,7 @@ class DeepSeekClient:
         print_output: bool,
         on_think_chunk: Optional[Callable[[str], None]],
         on_response_chunk: Optional[Callable[[str], None]],
+        on_message_id: Optional[Callable[[int], None]] = None,
     ) -> Tuple[str, str, Optional[int], bool]:
         """
         Procesa un stream SSE de chat/regenerate/continue.
@@ -314,6 +315,8 @@ class DeepSeekClient:
                     logger.warning(
                         "response_message_id no es un entero: %s", msg_id)
                     response_message_id = msg_id
+                if on_message_id and response_message_id is not None:
+                    on_message_id(response_message_id)
 
             # ---- Detectar INCOMPLETE status ----
             if obj.get("p") == "response/status" and obj.get("o") == "SET" and obj.get("v") == "INCOMPLETE":
@@ -473,6 +476,7 @@ class DeepSeekClient:
         print_output: bool = True,
         on_think_chunk: Optional[Callable[[str], None]] = None,
         on_response_chunk: Optional[Callable[[str], None]] = None,
+        on_message_id: Optional[Callable[[int], None]] = None,
         save_history: bool = True,
     ) -> Tuple[str, str, Optional[int], bool]:
         """
@@ -509,7 +513,7 @@ class DeepSeekClient:
 
         with self._send_request("POST", url, headers=headers, json=payload, stream=stream) as resp:
             think_text, response_text, response_message_id, is_incomplete = self._process_stream(
-                resp, print_output, on_think_chunk, on_response_chunk
+                resp, print_output, on_think_chunk, on_response_chunk, on_message_id
             )
 
         if save_history and response_message_id is not None:
@@ -542,6 +546,7 @@ class DeepSeekClient:
         print_output: bool = True,
         on_think_chunk: Optional[Callable[[str], None]] = None,
         on_response_chunk: Optional[Callable[[str], None]] = None,
+        on_message_id: Optional[Callable[[int], None]] = None,
         save_history: bool = True,
     ) -> Tuple[str, str, Optional[int], bool]:
         """
@@ -568,7 +573,7 @@ class DeepSeekClient:
 
         with self._send_request("POST", url, headers=headers, json=payload, stream=stream) as resp:
             think_text, response_text, response_message_id, is_incomplete = self._process_stream(
-                resp, print_output, on_think_chunk, on_response_chunk
+                resp, print_output, on_think_chunk, on_response_chunk, on_message_id
             )
 
         if save_history and response_message_id is not None:
@@ -622,6 +627,7 @@ class DeepSeekClient:
         print_output: bool = True,
         on_think_chunk: Optional[Callable[[str], None]] = None,
         on_response_chunk: Optional[Callable[[str], None]] = None,
+        on_message_id: Optional[Callable[[int], None]] = None,
         save_history: bool = False,
     ) -> Tuple[str, str, Optional[int], bool]:
         """
@@ -646,7 +652,7 @@ class DeepSeekClient:
 
         with self._send_request("POST", url, headers=headers, json=payload, stream=stream) as resp:
             think_text, response_text, response_message_id, is_incomplete = self._process_stream(
-                resp, print_output, on_think_chunk, on_response_chunk
+                resp, print_output, on_think_chunk, on_response_chunk, on_message_id
             )
 
         if save_history and response_message_id is not None:
