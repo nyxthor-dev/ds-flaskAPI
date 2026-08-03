@@ -44,8 +44,6 @@ class DeepSeekService:
         return cls._instance
 
     def __init__(self):
-        # Doble check bajo lock: __init__ se llama en cada DeepSeekService(),
-        # pero solo debe inicializar el cliente real una vez.
         if self._client is not None:
             return
         with self._init_lock:
@@ -85,74 +83,73 @@ class DeepSeekService:
             logger.error("❌ Error al subir archivo", exc_info=True)
             raise
 
-    def send_message(
+    # ============================================================
+    # HELPERS INTERNOS (no duplicar código)
+    # ============================================================
+
+    def _run_chat_in_thread(
         self,
-        session_id: str,
-        prompt: str,
-        parent_message_id: Optional[int] = None,
-        ref_file_ids: Optional[List[str]] = None,
-        thinking_enabled: bool = True,
-        search_enabled: bool = True,
-        model_type: Optional[str] = None,
-    ) -> Generator[Dict[str, Any], None, None]:
-        """Envía un mensaje y devuelve un generador de eventos (streaming interno).
+        queue: Queue,
+        target_func,
+        *args,
+        **kwargs,
+    ) -> threading.Thread:
+        """Ejecuta cualquier método del cliente en un hilo daemon y
+        alimenta la cola con eventos (think, response, done, error)."""
 
-        NOTA: los modelos deepseek-chat/deepseek-reasoner son FICTICIOS a nivel de
-        API pública; aquí solo controlan thinking_enabled y search_enabled. El
-        cliente real de DeepSeek no recibe un "modelo" explícito.
-        """
-        if Config.LOG_PROMPT_CONTENT:
-            logger.info("📤 session=%s thinking=%s search=%s prompt=%r", session_id, thinking_enabled, search_enabled, prompt[:100])
-        else:
-            logger.info("📤 session=%s thinking=%s search=%s len(prompt)=%d", session_id, thinking_enabled, search_enabled, len(prompt))
-
-        queue: Queue = Queue()
-        acquired = self._chat_semaphore.acquire(timeout=Config.CHAT_TIMEOUT_SECONDS)
-        if not acquired:
-            yield {"type": "error", "data": "Servidor saturado, intenta de nuevo en unos segundos."}
-            return
-
-        def on_think(chunk: str):
-            queue.put(("think", chunk))
-
-        def on_response(chunk: str):
-            queue.put(("response", chunk))
-
-        def chat_thread():
+        def worker():
             try:
-                think, response, msg_id = self.client.chat(
-                    prompt=prompt,
-                    session_id=session_id,
-                    parent_message_id=parent_message_id,
-                    ref_file_ids=ref_file_ids,
-                    stream=True,
-                    thinking_enabled=thinking_enabled,
-                    search_enabled=search_enabled,
-                    print_output=False,
-                    on_think_chunk=on_think,
-                    on_response_chunk=on_response,
-                    save_history=True,
-                )
-                logger.info("✅ Chat completado. Message ID: %s (think=%d chars, response=%d chars)", msg_id, len(think), len(response))
-
-                if not response and not think:
-                    logger.warning("⚠️ Respuesta vacía del modelo")
-                    queue.put(("response", "Lo siento, no pude generar una respuesta. Por favor, intenta de nuevo."))
-
-                queue.put(("done", msg_id))
+                result = target_func(*args, **kwargs)
+                # El cliente devuelve tuplas; desempaquetamos según el método
+                if isinstance(result, tuple):
+                    if len(result) == 4:  # (think, response, msg_id, is_incomplete)
+                        think, response, msg_id, is_incomplete = result
+                        # Reconstruir chunks para que el generador los sirva
+                        if think:
+                            for line in think.splitlines(keepends=True):
+                                queue.put(("think", line))
+                        if response:
+                            for line in response.splitlines(keepends=True):
+                                queue.put(("response", line))
+                        queue.put(("done", {"msg_id": msg_id, "is_incomplete": is_incomplete}))
+                    elif len(result) == 3:  # (think, response, msg_id) — legacy
+                        think, response, msg_id = result
+                        if think:
+                            for line in think.splitlines(keepends=True):
+                                queue.put(("think", line))
+                        if response:
+                            for line in response.splitlines(keepends=True):
+                                queue.put(("response", line))
+                        queue.put(("done", {"msg_id": msg_id, "is_incomplete": False}))
+                    else:
+                        queue.put(("error", f"Formato de respuesta inesperado: {result}"))
+                else:
+                    queue.put(("error", f"Formato de respuesta inesperado: {result}"))
             except Exception as e:
                 logger.exception("❌ Error en el hilo de chat")
                 queue.put(("error", str(e)))
             finally:
                 self._chat_semaphore.release()
 
-        thread = threading.Thread(target=chat_thread, daemon=True)
-        thread.start()
+        acquired = self._chat_semaphore.acquire(timeout=Config.CHAT_TIMEOUT_SECONDS)
+        if not acquired:
+            queue.put(("error", "Servidor saturado, intenta de nuevo en unos segundos."))
+            return None
 
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        return thread
+
+    def _yield_from_queue(
+        self,
+        queue: Queue,
+        timeout: int,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Consume eventos de la cola hasta recibir done/error/timeout."""
         deadline_hit = False
         while True:
             try:
-                event_type, data = queue.get(timeout=Config.CHAT_TIMEOUT_SECONDS)
+                event_type, data = queue.get(timeout=timeout)
             except Empty:
                 deadline_hit = True
                 yield {"type": "error", "data": "Tiempo de espera agotado esperando respuesta del backend."}
@@ -168,4 +165,153 @@ class DeepSeekService:
                 yield {"type": event_type, "data": data}
 
         if deadline_hit:
-            thread.join(timeout=1)
+            # Dar tiempo al hilo para terminar limpiamente
+            pass
+
+    # ============================================================
+    # SEND MESSAGE (chat normal)
+    # ============================================================
+
+    def send_message(
+        self,
+        session_id: str,
+        prompt: str,
+        parent_message_id: Optional[int] = None,
+        ref_file_ids: Optional[List[str]] = None,
+        thinking_enabled: bool = True,
+        search_enabled: bool = True,
+        model_type: Optional[str] = None,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Envía un mensaje y devuelve un generador de eventos (streaming interno)."""
+        if Config.LOG_PROMPT_CONTENT:
+            logger.info("📤 session=%s thinking=%s search=%s prompt=%r", session_id, thinking_enabled, search_enabled, prompt[:100])
+        else:
+            logger.info("📤 session=%s thinking=%s search=%s len(prompt)=%d", session_id, thinking_enabled, search_enabled, len(prompt))
+
+        queue: Queue = Queue()
+
+        def on_think(chunk: str):
+            queue.put(("think", chunk))
+
+        def on_response(chunk: str):
+            queue.put(("response", chunk))
+
+        def target():
+            return self.client.chat(
+                prompt=prompt,
+                session_id=session_id,
+                parent_message_id=parent_message_id,
+                ref_file_ids=ref_file_ids,
+                stream=True,
+                thinking_enabled=thinking_enabled,
+                search_enabled=search_enabled,
+                print_output=False,
+                on_think_chunk=on_think,
+                on_response_chunk=on_response,
+                save_history=True,
+            )
+
+        thread = self._run_chat_in_thread(queue, target)
+        if thread is None:
+            yield {"type": "error", "data": "Servidor saturado, intenta de nuevo en unos segundos."}
+            return
+
+        yield from self._yield_from_queue(queue, Config.CHAT_TIMEOUT_SECONDS)
+
+    # ============================================================
+    # REGENERATE
+    # ============================================================
+
+    def regenerate_message(
+        self,
+        session_id: str,
+        child_message_id: int,
+        thinking_enabled: bool = True,
+        search_enabled: bool = True,
+        user_options: Optional[Dict[str, Any]] = None,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Regenera una respuesta existente. Devuelve generador de eventos."""
+        logger.info("🔄 Regenerando message_id=%s en session=%s", child_message_id, session_id)
+
+        queue: Queue = Queue()
+
+        def on_think(chunk: str):
+            queue.put(("think", chunk))
+
+        def on_response(chunk: str):
+            queue.put(("response", chunk))
+
+        def target():
+            return self.client.regenerate(
+                session_id=session_id,
+                child_message_id=child_message_id,
+                stream=True,
+                thinking_enabled=thinking_enabled,
+                search_enabled=search_enabled,
+                user_options=user_options,
+                print_output=False,
+                on_think_chunk=on_think,
+                on_response_chunk=on_response,
+                save_history=True,
+            )
+
+        thread = self._run_chat_in_thread(queue, target)
+        if thread is None:
+            yield {"type": "error", "data": "Servidor saturado, intenta de nuevo en unos segundos."}
+            return
+
+        yield from self._yield_from_queue(queue, Config.CHAT_TIMEOUT_SECONDS)
+
+    # ============================================================
+    # STOP STREAM
+    # ============================================================
+
+    def stop_message_stream(self, session_id: str, message_id: int) -> Dict[str, Any]:
+        """Detiene la generación en curso de un mensaje específico."""
+        logger.info("🛑 Deteniendo stream message_id=%s en session=%s", message_id, session_id)
+        try:
+            result = self.client.stop_stream(session_id=session_id, message_id=message_id)
+            return {"success": True, "data": result}
+        except Exception as e:
+            logger.exception("❌ Error al detener stream")
+            return {"success": False, "error": str(e)}
+
+    # ============================================================
+    # CONTINUE GENERATION
+    # ============================================================
+
+    def continue_message(
+        self,
+        session_id: str,
+        message_id: int,
+        fallback_to_resume: bool = True,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Continúa una respuesta que quedó INCOMPLETE."""
+        logger.info("▶️ Continuando message_id=%s en session=%s", message_id, session_id)
+
+        queue: Queue = Queue()
+
+        def on_think(chunk: str):
+            queue.put(("think", chunk))
+
+        def on_response(chunk: str):
+            queue.put(("response", chunk))
+
+        def target():
+            return self.client.continue_generation(
+                session_id=session_id,
+                message_id=message_id,
+                fallback_to_resume=fallback_to_resume,
+                stream=True,
+                print_output=False,
+                on_think_chunk=on_think,
+                on_response_chunk=on_response,
+                save_history=False,
+            )
+
+        thread = self._run_chat_in_thread(queue, target)
+        if thread is None:
+            yield {"type": "error", "data": "Servidor saturado, intenta de nuevo en unos segundos."}
+            return
+
+        yield from self._yield_from_queue(queue, Config.CHAT_TIMEOUT_SECONDS)
