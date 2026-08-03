@@ -88,13 +88,9 @@ def _apply_stop_and_truncate(text: str, stop_sequences: list, max_tokens: Option
         finish_reason = "stop"
 
     if max_tokens is not None:
-        # Truncado aproximado: recorta por caracteres usando la misma
-        # heurística de count_tokens (no es exacto, pero es consistente
-        # con el 'usage' reportado).
         approx_chars_per_token = 4
         max_chars = max_tokens * approx_chars_per_token
         if len(text) > max_chars or count_tokens(text, model) > max_tokens:
-            # Recorte progresivo simple hasta caer bajo el límite
             words = text.split(" ")
             truncated = []
             for w in words:
@@ -106,6 +102,10 @@ def _apply_stop_and_truncate(text: str, stop_sequences: list, max_tokens: Option
             finish_reason = "length"
 
     return text, finish_reason
+
+# ============================================================
+# /v1/chat/completions (OpenAI compatible)
+# ============================================================
 
 @chat_bp.route("/v1/chat/completions", methods=["POST"])
 @require_api_key
@@ -119,10 +119,8 @@ def chat_completions():
     if not messages:
         return openai_error("'messages' es obligatorio")
 
-    # 🔥 NORMALIZAR MENSAJES: convertir formatos Anthropic/RooCode a OpenAI
     messages = normalize_messages(messages)
-    
-    # Log para depuración
+
     logger.info(f"📨 Mensajes normalizados: {len(messages)} mensajes")
     if Config.LOG_PROMPT_CONTENT:
         logger.debug(f"📨 Contenido: {json.dumps(messages, ensure_ascii=False, indent=2)}")
@@ -137,8 +135,6 @@ def chat_completions():
     # --- LÓGICA DE HERRAMIENTAS (tool calling) ---
     tools = data.get("tools")
     tool_choice = data.get("tool_choice", "auto")
-
-    # Evitar bucles
     has_tool_result = has_tool_in_history(messages)
     should_decide_tool = (
         tools
@@ -150,7 +146,7 @@ def chat_completions():
         logger.info(f"🔧 Tools disponibles: {[t.get('function', {}).get('name') for t in tools]}")
         try:
             decision_prompt = build_tool_decision_prompt(messages, tools)
-            
+
             if Config.LOG_PROMPT_CONTENT:
                 logger.debug(f"🔧 Prompt decisión: {decision_prompt[:500]}...")
 
@@ -192,7 +188,6 @@ def chat_completions():
 
         except Exception as e:
             logger.error(f"❌ Error en tool calling: {e}")
-            # Si falla, seguimos con texto
 
     # --- FLUJO NORMAL: respuesta de texto ---
     full_prompt = build_full_prompt(messages)
@@ -207,12 +202,6 @@ def chat_completions():
     stream_options = data.get("stream_options") or {}
     include_usage = bool(stream_options.get("include_usage", False))
 
-    # --- Chats persistentes (opcional) ---
-    # Si el cliente manda session_id, se reutiliza esa sesión de DeepSeek en
-    # vez de crear una nueva. Si además manda parent_message_id, se encadena
-    # el turno para mantener el hilo del lado del proveedor. Ambos son
-    # opcionales: sin ellos el comportamiento es el de siempre (sesión nueva
-    # y sin hilo en cada request).
     in_session_id = data.get("session_id")
     in_parent_message_id = data.get("parent_message_id")
     if in_parent_message_id is not None:
@@ -242,31 +231,177 @@ def chat_completions():
             session_id=in_session_id, parent_message_id=in_parent_message_id,
         )
 
-# ---------- Funciones auxiliares (sin cambios) ----------
+# ============================================================
+# /api/chat/regenerate
+# ============================================================
 
-def _full_response(completion_id, created, model, prompt, thinking_enabled, search_enabled,
-                    stop_sequences=None, max_tokens=None, session_id=None, parent_message_id=None):
+@chat_bp.route("/api/chat/regenerate", methods=["POST"])
+@require_api_key
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def api_regenerate():
+    """Regenera una respuesta existente."""
+    data = request.get_json(silent=True) or {}
+
+    session_id = data.get("session_id")
+    child_message_id = data.get("child_message_id")
+    stream = bool(data.get("stream", False))
+    thinking_enabled = bool(data.get("thinking_enabled", True))
+    search_enabled = bool(data.get("search_enabled", True))
+    user_options = data.get("user_options")
+
+    if not session_id:
+        return openai_error("'session_id' es obligatorio")
+    if child_message_id is None:
+        return openai_error("'child_message_id' es obligatorio")
+    try:
+        child_message_id = int(child_message_id)
+    except (TypeError, ValueError):
+        return openai_error("'child_message_id' debe ser un entero")
+
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+    model = data.get("model", "deepseek-chat")
+
+    if stream:
+        return _stream_events(
+            completion_id, created, model,
+            service.regenerate_message(
+                session_id=session_id,
+                child_message_id=child_message_id,
+                thinking_enabled=thinking_enabled,
+                search_enabled=search_enabled,
+                user_options=user_options,
+            ),
+            stop_sequences=[],
+            max_tokens=None,
+            include_usage=False,
+            session_id=session_id,
+        )
+    else:
+        return _full_events(
+            completion_id, created, model,
+            service.regenerate_message(
+                session_id=session_id,
+                child_message_id=child_message_id,
+                thinking_enabled=thinking_enabled,
+                search_enabled=search_enabled,
+                user_options=user_options,
+            ),
+            stop_sequences=[],
+            max_tokens=None,
+            session_id=session_id,
+        )
+
+# ============================================================
+# /api/chat/stop
+# ============================================================
+
+@chat_bp.route("/api/chat/stop", methods=["POST"])
+@require_api_key
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def api_stop():
+    """Detiene la generación en curso de un mensaje."""
+    data = request.get_json(silent=True) or {}
+
+    session_id = data.get("session_id")
+    message_id = data.get("message_id")
+
+    if not session_id:
+        return openai_error("'session_id' es obligatorio")
+    if message_id is None:
+        return openai_error("'message_id' es obligatorio")
+    try:
+        message_id = int(message_id)
+    except (TypeError, ValueError):
+        return openai_error("'message_id' debe ser un entero")
+
+    result = service.stop_message_stream(session_id=session_id, message_id=message_id)
+    if result.get("success"):
+        return jsonify({"success": True, "message": "Stream detenido", "data": result.get("data")}), 200
+    return openai_error(result.get("error", "Error al detener el stream"), status_code=502)
+
+# ============================================================
+# /api/chat/continue
+# ============================================================
+
+@chat_bp.route("/api/chat/continue", methods=["POST"])
+@require_api_key
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def api_continue():
+    """Continúa una respuesta que quedó INCOMPLETE."""
+    data = request.get_json(silent=True) or {}
+
+    session_id = data.get("session_id")
+    message_id = data.get("message_id")
+    fallback_to_resume = bool(data.get("fallback_to_resume", True))
+    stream = bool(data.get("stream", False))
+
+    if not session_id:
+        return openai_error("'session_id' es obligatorio")
+    if message_id is None:
+        return openai_error("'message_id' es obligatorio")
+    try:
+        message_id = int(message_id)
+    except (TypeError, ValueError):
+        return openai_error("'message_id' debe ser un entero")
+
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+    model = data.get("model", "deepseek-chat")
+
+    if stream:
+        return _stream_events(
+            completion_id, created, model,
+            service.continue_message(
+                session_id=session_id,
+                message_id=message_id,
+                fallback_to_resume=fallback_to_resume,
+            ),
+            stop_sequences=[],
+            max_tokens=None,
+            include_usage=False,
+            session_id=session_id,
+        )
+    else:
+        return _full_events(
+            completion_id, created, model,
+            service.continue_message(
+                session_id=session_id,
+                message_id=message_id,
+                fallback_to_resume=fallback_to_resume,
+            ),
+            stop_sequences=[],
+            max_tokens=None,
+            session_id=session_id,
+        )
+
+# ============================================================
+# FUNCIONES AUXILIARES GENÉRICAS
+# ============================================================
+
+def _full_events(
+    completion_id, created, model, event_generator,
+    stop_sequences=None, max_tokens=None, session_id=None,
+):
+    """Procesa un generador de eventos y devuelve respuesta JSON completa."""
     stop_sequences = stop_sequences or []
     try:
-        if session_id is None:
-            session_id = service.create_session()
-
         respuesta, razonamiento = "", ""
         response_message_id = None
+        is_incomplete = False
 
-        for event in service.send_message(
-            session_id=session_id,
-            prompt=prompt,
-            parent_message_id=parent_message_id,
-            thinking_enabled=thinking_enabled,
-            search_enabled=search_enabled,
-        ):
+        for event in event_generator:
             if event["type"] == "think":
                 razonamiento += event["data"]
             elif event["type"] == "response" and event["data"] != "FINISHED":
                 respuesta += event["data"]
             elif event["type"] == "done":
-                response_message_id = event["data"]
+                done_data = event["data"]
+                if isinstance(done_data, dict):
+                    response_message_id = done_data.get("msg_id")
+                    is_incomplete = done_data.get("is_incomplete", False)
+                else:
+                    response_message_id = done_data
             elif event["type"] == "error":
                 logger.error(f"Error del servicio: {event['data']}")
                 return openai_error(event["data"], status_code=502, error_type="server_error")
@@ -277,7 +412,7 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
         respuesta, truncation_reason = _apply_stop_and_truncate(respuesta, stop_sequences, max_tokens, model)
         finish_reason = truncation_reason or "stop"
 
-        prompt_tokens = count_tokens(prompt, model)
+        prompt_tokens = 0  # No tenemos el prompt original aquí en regenerate/continue
         completion_tokens = count_tokens(respuesta, model)
 
         message = {"role": "assistant", "content": respuesta}
@@ -300,11 +435,9 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
             },
-            # Campos extra (no-OpenAI) para chats persistentes opcionales:
-            # el cliente puede guardarlos y reenviarlos en el siguiente
-            # request para mantener el hilo del lado de DeepSeek.
             "session_id": session_id,
             "parent_message_id": response_message_id,
+            "is_incomplete": is_incomplete,
         }
         return jsonify(response), 200
 
@@ -313,10 +446,12 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
         message = str(e) if Config.EXPOSE_ERROR_DETAILS else "Error al generar la respuesta"
         return openai_error(message, status_code=502, error_type="server_error")
 
-def _stream_response(completion_id, created, model, prompt, thinking_enabled, search_enabled,
-                      stop_sequences=None, max_tokens=None, include_usage=False,
-                      session_id=None, parent_message_id=None):
-    """Streaming con formato OpenAI estándar."""
+def _stream_events(
+    completion_id, created, model, event_generator,
+    stop_sequences=None, max_tokens=None, include_usage=False,
+    session_id=None,
+):
+    """Streaming con formato OpenAI estándar desde cualquier generador de eventos."""
     stop_sequences = stop_sequences or []
 
     def sse_chunk(delta: dict, finish_reason=None, logprobs=None):
@@ -344,9 +479,7 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
         }
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    def sse_meta_chunk(session_id_out, parent_message_id_out):
-        """Chunk extra (no-OpenAI) con los ids para chats persistentes
-        opcionales. Se emite justo antes de [DONE]."""
+    def sse_meta_chunk(session_id_out, parent_message_id_out, is_incomplete_out):
         payload = {
             "id": completion_id,
             "object": "chat.completion.chunk",
@@ -355,6 +488,7 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
             "choices": [],
             "session_id": session_id_out,
             "parent_message_id": parent_message_id_out,
+            "is_incomplete": is_incomplete_out,
         }
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -363,28 +497,23 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
         full_text = ""
         finish_reason = "stop"
         response_message_id = None
-        active_session_id = session_id
+        is_incomplete = False
         try:
-            if active_session_id is None:
-                active_session_id = service.create_session()
-
             yield sse_chunk({"role": "assistant"})
 
-            for event in service.send_message(
-                session_id=active_session_id,
-                prompt=prompt,
-                parent_message_id=parent_message_id,
-                thinking_enabled=thinking_enabled,
-                search_enabled=search_enabled,
-            ):
+            for event in event_generator:
                 if event["type"] == "think":
                     yield sse_chunk({"reasoning_content": event["data"]})
                 elif event["type"] == "done":
-                    response_message_id = event["data"]
+                    done_data = event["data"]
+                    if isinstance(done_data, dict):
+                        response_message_id = done_data.get("msg_id")
+                        is_incomplete = done_data.get("is_incomplete", False)
+                    else:
+                        response_message_id = done_data
                 elif event["type"] == "response" and event["data"] != "FINISHED":
                     chunk_text = event["data"]
 
-                    # Buscar si alguna stop sequence aparece en lo acumulado + este chunk
                     combined = full_text + chunk_text
                     cut_at = None
                     for seq in stop_sequences:
@@ -395,7 +524,6 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
                             cut_at = idx
 
                     if cut_at is not None:
-                        # Solo emitir la parte antes del stop, y cortar el stream aquí
                         remaining_to_emit = combined[len(full_text):cut_at]
                         if remaining_to_emit:
                             yield sse_chunk({"content": remaining_to_emit})
@@ -425,11 +553,11 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
             yield sse_chunk({}, finish_reason=finish_reason)
 
             if include_usage:
-                prompt_tokens = count_tokens(prompt, model)
+                prompt_tokens = 0
                 completion_tokens = count_tokens(full_text, model)
                 yield sse_usage_chunk(prompt_tokens, completion_tokens)
 
-            yield sse_meta_chunk(active_session_id, response_message_id)
+            yield sse_meta_chunk(session_id, response_message_id, is_incomplete)
             yield "data: [DONE]\n\n"
 
         except Exception:
@@ -441,7 +569,10 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-# ---------- Endpoint /v1/models ----------
+# ============================================================
+# /v1/models
+# ============================================================
+
 @chat_bp.route("/v1/models", methods=["GET"])
 @require_api_key
 def list_models():
