@@ -1,4 +1,4 @@
-# routes/chat.py - Compatibilidad total con  (OpenAI format)
+# routes/chat.py - Compatibilidad total con RooCode (OpenAI format)
 import json
 import logging
 import time
@@ -14,7 +14,7 @@ from utils.auth import require_api_key
 from utils.errors import openai_error
 from utils.tokens import count_tokens
 
-# Importar l贸gica de herramientas mejorada
+# Importar lógica de herramientas mejorada
 from routes.tool_handler import (
     normalize_messages,
     build_full_prompt,
@@ -70,9 +70,9 @@ def _get_stop_sequences(data: dict) -> list:
 
 def _apply_stop_and_truncate(text: str, stop_sequences: list, max_tokens: Optional[int], model: str):
     """Aplica stop sequences (corta el texto en la primera que aparezca) y
-    trunca por max_tokens (aproximado, v铆a count_tokens). Devuelve
+    trunca por max_tokens (aproximado, vía count_tokens). Devuelve
     (texto_final, finish_reason) donde finish_reason es 'stop', 'length' o None
-    (None = termin贸 naturalmente, se debe usar 'stop' igualmente aguas arriba).
+    (None = terminó naturalmente, se debe usar 'stop' igualmente aguas arriba).
     """
     finish_reason = None
 
@@ -89,12 +89,12 @@ def _apply_stop_and_truncate(text: str, stop_sequences: list, max_tokens: Option
 
     if max_tokens is not None:
         # Truncado aproximado: recorta por caracteres usando la misma
-        # heur铆stica de count_tokens (no es exacto, pero es consistente
+        # heurística de count_tokens (no es exacto, pero es consistente
         # con el 'usage' reportado).
         approx_chars_per_token = 4
         max_chars = max_tokens * approx_chars_per_token
         if len(text) > max_chars or count_tokens(text, model) > max_tokens:
-            # Recorte progresivo simple hasta caer bajo el l铆mite
+            # Recorte progresivo simple hasta caer bajo el límite
             words = text.split(" ")
             truncated = []
             for w in words:
@@ -113,19 +113,19 @@ def _apply_stop_and_truncate(text: str, stop_sequences: list, max_tokens: Option
 def chat_completions():
     data = request.get_json(silent=True)
     if not data:
-        return openai_error("Se requiere un cuerpo JSON v谩lido")
+        return openai_error("Se requiere un cuerpo JSON válido")
 
     messages = data.get("messages", [])
     if not messages:
         return openai_error("'messages' es obligatorio")
 
-    # 馃敟 NORMALIZAR MENSAJES: convertir formatos Anthropic/RooCode a OpenAI
+    # 🔥 NORMALIZAR MENSAJES: convertir formatos Anthropic/RooCode a OpenAI
     messages = normalize_messages(messages)
     
-    # Log para depuraci贸n
-    logger.info(f"馃摠 Mensajes normalizados: {len(messages)} mensajes")
+    # Log para depuración
+    logger.info(f"📨 Mensajes normalizados: {len(messages)} mensajes")
     if Config.LOG_PROMPT_CONTENT:
-        logger.debug(f"馃摠 Contenido: {json.dumps(messages, ensure_ascii=False, indent=2)}")
+        logger.debug(f"📨 Contenido: {json.dumps(messages, ensure_ascii=False, indent=2)}")
 
     model = data.get("model", "deepseek-chat")
     stream = bool(data.get("stream", False))
@@ -134,7 +134,7 @@ def chat_completions():
     if error:
         return openai_error(error)
 
-    # --- L脫GICA DE HERRAMIENTAS (tool calling) ---
+    # --- LÓGICA DE HERRAMIENTAS (tool calling) ---
     tools = data.get("tools")
     tool_choice = data.get("tool_choice", "auto")
 
@@ -147,12 +147,12 @@ def chat_completions():
     )
 
     if should_decide_tool:
-        logger.info(f"馃敡 Tools disponibles: {[t.get('function', {}).get('name') for t in tools]}")
+        logger.info(f"🔧 Tools disponibles: {[t.get('function', {}).get('name') for t in tools]}")
         try:
             decision_prompt = build_tool_decision_prompt(messages, tools)
             
             if Config.LOG_PROMPT_CONTENT:
-                logger.debug(f"馃敡 Prompt decisi贸n: {decision_prompt[:500]}...")
+                logger.debug(f"🔧 Prompt decisión: {decision_prompt[:500]}...")
 
             session_id = service.create_session()
             decision_response = ""
@@ -165,12 +165,12 @@ def chat_completions():
                 if event["type"] == "response" and event["data"] != "FINISHED":
                     decision_response += event["data"]
                 elif event["type"] == "error":
-                    logger.error(f"Error en decisi贸n de herramienta: {event['data']}")
+                    logger.error(f"Error en decisión de herramienta: {event['data']}")
                     break
 
             tool_call = parse_tool_decision(decision_response)
             if tool_call:
-                logger.info(f"馃敡 DeepSeek decidi贸 usar herramienta: {tool_call['function']['name']}")
+                logger.info(f"🔧 DeepSeek decidió usar herramienta: {tool_call['function']['name']}")
                 prompt_tokens = count_tokens(decision_prompt, model)
                 completion_tokens = count_tokens(decision_response, model)
                 if stream:
@@ -188,16 +188,16 @@ def chat_completions():
                     completion_tokens=completion_tokens,
                 )
 
-            logger.info("馃敡 DeepSeek decidi贸 NO usar herramienta")
+            logger.info("🔧 DeepSeek decidió NO usar herramienta")
 
         except Exception as e:
-            logger.error(f"鉂� Error en tool calling: {e}")
+            logger.error(f"❌ Error en tool calling: {e}")
             # Si falla, seguimos con texto
 
     # --- FLUJO NORMAL: respuesta de texto ---
     full_prompt = build_full_prompt(messages)
     if not full_prompt.strip():
-        return openai_error("No se encontr贸 contenido en los mensajes")
+        return openai_error("No se encontró contenido en los mensajes")
 
     thinking_enabled = "reasoner" in model.lower() or data.get("reasoning_enabled") is True
     search_enabled = bool(data.get("search_enabled", False))
@@ -208,10 +208,10 @@ def chat_completions():
     include_usage = bool(stream_options.get("include_usage", False))
 
     # --- Chats persistentes (opcional) ---
-    # Si el cliente manda session_id, se reutiliza esa sesi贸n de DeepSeek en
-    # vez de crear una nueva. Si adem谩s manda parent_message_id, se encadena
+    # Si el cliente manda session_id, se reutiliza esa sesión de DeepSeek en
+    # vez de crear una nueva. Si además manda parent_message_id, se encadena
     # el turno para mantener el hilo del lado del proveedor. Ambos son
-    # opcionales: sin ellos el comportamiento es el de siempre (sesi贸n nueva
+    # opcionales: sin ellos el comportamiento es el de siempre (sesión nueva
     # y sin hilo en cada request).
     in_session_id = data.get("session_id")
     in_parent_message_id = data.get("parent_message_id")
@@ -222,9 +222,9 @@ def chat_completions():
             return openai_error("'parent_message_id' debe ser un entero")
 
     if Config.LOG_PROMPT_CONTENT:
-        logger.info(f"馃摜 Prompt completo: {full_prompt[:200]}...")
+        logger.info(f"📥 Prompt completo: {full_prompt[:200]}...")
     else:
-        logger.info(f"馃摜 Prompt length: {len(full_prompt)} caracteres")
+        logger.info(f"📥 Prompt length: {len(full_prompt)} caracteres")
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
@@ -309,14 +309,14 @@ def _full_response(completion_id, created, model, prompt, thinking_enabled, sear
         return jsonify(response), 200
 
     except Exception as e:
-        logger.exception("鉂� Error en chat completions")
+        logger.exception("❌ Error en chat completions")
         message = str(e) if Config.EXPOSE_ERROR_DETAILS else "Error al generar la respuesta"
         return openai_error(message, status_code=502, error_type="server_error")
 
 def _stream_response(completion_id, created, model, prompt, thinking_enabled, search_enabled,
                       stop_sequences=None, max_tokens=None, include_usage=False,
                       session_id=None, parent_message_id=None):
-    """Streaming con formato OpenAI est谩ndar."""
+    """Streaming con formato OpenAI estándar."""
     stop_sequences = stop_sequences or []
 
     def sse_chunk(delta: dict, finish_reason=None, logprobs=None):
@@ -395,7 +395,7 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
                             cut_at = idx
 
                     if cut_at is not None:
-                        # Solo emitir la parte antes del stop, y cortar el stream aqu铆
+                        # Solo emitir la parte antes del stop, y cortar el stream aquí
                         remaining_to_emit = combined[len(full_text):cut_at]
                         if remaining_to_emit:
                             yield sse_chunk({"content": remaining_to_emit})
@@ -415,7 +415,7 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
                     sent_content = True
                 elif event["type"] == "error":
                     logger.error(f"Error del servicio (stream): {event['data']}")
-                    yield sse_chunk({"content": "Lo siento, ocurri贸 un error."})
+                    yield sse_chunk({"content": "Lo siento, ocurrió un error."})
                     sent_content = True
                     break
 
@@ -433,7 +433,7 @@ def _stream_response(completion_id, created, model, prompt, thinking_enabled, se
             yield "data: [DONE]\n\n"
 
         except Exception:
-            logger.exception("鉂� Error en streaming")
+            logger.exception("❌ Error en streaming")
             yield sse_chunk({"content": "Error interno del servidor."})
             yield sse_chunk({}, finish_reason="stop")
             yield "data: [DONE]\n\n"
