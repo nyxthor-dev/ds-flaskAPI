@@ -547,6 +547,15 @@ def _stream_events(
             for event in event_generator:
                 if event["type"] == "think":
                     yield sse_chunk({"reasoning_content": event["data"]})
+                elif event["type"] == "msg_id":
+                    # Llega muy temprano en el stream (evento "ready" de
+                    # DeepSeek), antes de que exista ningún contenido. Lo
+                    # emitimos ya mismo para que el frontend pueda guardar
+                    # el id del mensaje incluso si el usuario detiene la
+                    # generación a los pocos segundos.
+                    if event["data"] is not None:
+                        response_message_id = event["data"]
+                        yield sse_meta_chunk(session_id, response_message_id, is_incomplete)
                 elif event["type"] == "done":
                     done_data = event["data"]
                     if isinstance(done_data, dict):
@@ -554,6 +563,13 @@ def _stream_events(
                         is_incomplete = done_data.get("is_incomplete", False)
                     else:
                         response_message_id = done_data
+                    # Emitir el id del mensaje en cuanto se conoce (llega
+                    # temprano desde DeepSeek). Si el cliente aborta el
+                    # stream después de esto (botón "detener"), el id ya
+                    # quedó guardado en el frontend para poder continuar
+                    # o regenerar ese mismo mensaje más tarde.
+                    if response_message_id is not None:
+                        yield sse_meta_chunk(session_id, response_message_id, is_incomplete)
                 elif event["type"] == "response" and event["data"] != "FINISHED":
                     chunk_text = event["data"]
 
