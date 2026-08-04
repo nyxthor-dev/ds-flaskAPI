@@ -74,9 +74,11 @@ class DeepSeekService:
             logger.error("❌ Error al crear sesión", exc_info=True)
             raise
 
-    def upload_file(self, file_path: str, thinking: bool = True) -> str:
+    def upload_file(self, file_path: str, thinking: bool = True, display_name: str = None) -> str:
         try:
-            file_id = self.client.upload_file(file_path, thinking_enabled=thinking)
+            file_id = self.client.upload_file(
+                file_path, thinking_enabled=thinking, display_name=display_name
+            )
             logger.info("✅ Archivo subido: %s", file_id)
             return file_id
         except Exception:
