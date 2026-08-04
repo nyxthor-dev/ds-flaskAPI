@@ -23,6 +23,7 @@ from routes.tool_handler import (
     build_tool_response,
     build_tool_response_stream_chunks,
     has_tool_in_history,
+    extract_file_ids_from_messages,
 )
 
 chat_bp = Blueprint("chat", __name__)
@@ -194,6 +195,18 @@ def chat_completions():
     if not full_prompt.strip():
         return openai_error("No se encontró contenido en los mensajes")
 
+    # Archivos adjuntos: se aceptan tanto en 'ref_file_ids' a nivel de body
+    # (compatibilidad con /api/chat/send) como embebidos dentro del content
+    # de los mensajes (formato usado por varios clientes tipo OpenAI).
+    # Sin esto, un archivo subido con /v1/files nunca llegaba a DeepSeek
+    # aunque el frontend lo mostrara adjunto en el mensaje.
+    ref_file_ids = data.get("ref_file_ids") or []
+    if not isinstance(ref_file_ids, list):
+        ref_file_ids = []
+    ref_file_ids = list(ref_file_ids) + [
+        fid for fid in extract_file_ids_from_messages(messages) if fid not in ref_file_ids
+    ]
+
     thinking_enabled = "reasoner" in model.lower() or data.get("reasoning_enabled") is True
     search_enabled = bool(data.get("search_enabled", False))
 
@@ -223,12 +236,14 @@ def chat_completions():
             completion_id, created, model, full_prompt, thinking_enabled, search_enabled,
             stop_sequences=stop_sequences, max_tokens=max_tokens, include_usage=include_usage,
             session_id=in_session_id, parent_message_id=in_parent_message_id,
+            ref_file_ids=ref_file_ids,
         )
     else:
         return _full_response(
             completion_id, created, model, full_prompt, thinking_enabled, search_enabled,
             stop_sequences=stop_sequences, max_tokens=max_tokens,
             session_id=in_session_id, parent_message_id=in_parent_message_id,
+            ref_file_ids=ref_file_ids,
         )
 
 # ============================================================
@@ -445,7 +460,7 @@ def api_edit_message():
 def _stream_response(
     completion_id, created, model, prompt, thinking_enabled, search_enabled,
     stop_sequences=None, max_tokens=None, include_usage=False,
-    session_id=None, parent_message_id=None,
+    session_id=None, parent_message_id=None, ref_file_ids=None,
 ):
     """Punto de entrada de /v1/chat/completions con stream=True.
     Crea sesión si hace falta y delega el renderizado SSE a _stream_events.
@@ -457,6 +472,7 @@ def _stream_response(
         parent_message_id=parent_message_id,
         thinking_enabled=thinking_enabled,
         search_enabled=search_enabled,
+        ref_file_ids=ref_file_ids,
     )
     return _stream_events(
         completion_id, created, model, event_generator,
@@ -467,7 +483,7 @@ def _stream_response(
 def _full_response(
     completion_id, created, model, prompt, thinking_enabled, search_enabled,
     stop_sequences=None, max_tokens=None,
-    session_id=None, parent_message_id=None,
+    session_id=None, parent_message_id=None, ref_file_ids=None,
 ):
     """Punto de entrada de /v1/chat/completions con stream=False.
     Crea sesión si hace falta y delega el JSON final a _full_events.
@@ -479,6 +495,7 @@ def _full_response(
         parent_message_id=parent_message_id,
         thinking_enabled=thinking_enabled,
         search_enabled=search_enabled,
+        ref_file_ids=ref_file_ids,
     )
     return _full_events(
         completion_id, created, model, event_generator,
