@@ -170,6 +170,7 @@ class DeepSeekClient:
         file_path: str,
         model_type: str = "default",
         thinking_enabled: bool = True,
+        display_name: str = None,
     ) -> str:
         file_path_obj = Path(file_path)
         if not file_path_obj.exists():
@@ -184,8 +185,13 @@ class DeepSeekClient:
         headers["x-model-type"] = model_type
         headers["x-file-size"] = str(file_path_obj.stat().st_size)
 
+        # Permite subir con un nombre visible distinto al del archivo
+        # temporal en disco (útil cuando el archivo real fue convertido
+        # a .txt internamente pero queremos conservar su nombre original).
+        upload_name = display_name if display_name else file_path_obj.name
+
         with open(file_path_obj, "rb") as f:
-            files = {"file": (file_path_obj.name, f,
+            files = {"file": (upload_name, f,
                               "application/octet-stream")}
             resp = self._send_request(
                 "POST", url, headers=headers, files=files)
