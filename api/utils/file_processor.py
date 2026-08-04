@@ -34,9 +34,13 @@ MAX_EXTRACTED_SIZE = 2 * 1024 * 1024  # 2 MB
 
 
 def is_archive(filename: str) -> bool:
-    """Determina si un archivo es un comprimido según su extensión."""
-    ext = os.path.splitext(filename)[1].lower()
-    return ext in ARCHIVE_EXTENSIONS
+    """Determina si un archivo es un comprimido según su extensión.
+    Usa el nombre completo en minúsculas (no solo la última extensión)
+    porque os.path.splitext('x.tar.gz') devuelve '.gz', no '.tar.gz',
+    lo que haría fallar la detección de .tar.gz con un simple splitext.
+    """
+    name_lower = filename.lower()
+    return any(name_lower.endswith(ext) for ext in ARCHIVE_EXTENSIONS)
 
 
 def is_text_file(filename: str) -> bool:
@@ -88,7 +92,15 @@ def safe_extract_rar(rar_path: str, dest_dir: str) -> List[str]:
     try:
         import rarfile
     except ImportError:
-        raise RuntimeError("El módulo 'rarfile' no está instalado. Instálalo con: pip install rarfile")
+        raise RuntimeError(
+            "Soporte para .rar no disponible: falta el paquete 'rarfile' "
+            "(pip install rarfile) y el binario 'unrar' del sistema."
+        )
+    if shutil.which("unrar") is None and shutil.which("unar") is None:
+        raise RuntimeError(
+            "Soporte para .rar no disponible: falta el binario 'unrar' (o 'unar') "
+            "en el sistema. Instálalo con tu gestor de paquetes (ej: apt install unrar)."
+        )
     extracted = []
     with rarfile.RarFile(rar_path) as rf:
         for member in rf.infolist():
@@ -108,14 +120,15 @@ def extract_archive(archive_path: str, dest_dir: str) -> List[str]:
     Extrae un archivo comprimido según su extensión.
     Devuelve lista de rutas extraídas (relativas a dest_dir).
     """
-    ext = os.path.splitext(archive_path)[1].lower()
-    if ext == ".zip":
+    name_lower = archive_path.lower()
+    if name_lower.endswith(".zip"):
         return safe_extract_zip(archive_path, dest_dir)
-    elif ext in (".tar", ".tgz", ".tar.gz", ".gz"):
+    elif name_lower.endswith((".tar", ".tgz", ".tar.gz", ".gz")):
         return safe_extract_tar(archive_path, dest_dir)
-    elif ext == ".rar":
+    elif name_lower.endswith(".rar"):
         return safe_extract_rar(archive_path, dest_dir)
     else:
+        ext = os.path.splitext(archive_path)[1].lower()
         raise ValueError(f"Formato de archivo no soportado: {ext}")
 
 
