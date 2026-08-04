@@ -101,11 +101,6 @@ class DeepSeekService:
             try:
                 result = target_func(*args, **kwargs)
                 # El cliente devuelve tuplas; desempaquetamos según el método.
-                # NOTA: think/response YA se enviaron a la cola en tiempo real
-                # a través de los callbacks on_think_chunk/on_response_chunk
-                # (ver send_message/regenerate_message/continue_message más
-                # abajo). Reenviarlos aquí de nuevo duplicaría todo el texto.
-                # Solo queda comunicar que terminó, con el id del mensaje.
                 if isinstance(result, tuple):
                     if len(result) == 4:  # (think, response, msg_id, is_incomplete)
                         _think, _response, msg_id, is_incomplete = result
@@ -311,6 +306,60 @@ class DeepSeekService:
                 on_response_chunk=on_response,
                 on_message_id=on_msg_id,
                 save_history=False,
+            )
+
+        thread = self._run_chat_in_thread(queue, target)
+        if thread is None:
+            yield {"type": "error", "data": "Servidor saturado, intenta de nuevo en unos segundos."}
+            return
+
+        yield from self._yield_from_queue(queue, Config.CHAT_TIMEOUT_SECONDS)
+
+    # ============================================================
+    # EDIT MESSAGE (NUEVO)
+    # ============================================================
+
+    def edit_message(
+        self,
+        session_id: str,
+        message_id: int,
+        prompt: str,
+        ref_file_ids: Optional[List[str]] = None,
+        thinking_enabled: bool = True,
+        search_enabled: bool = True,
+        action: Optional[str] = None,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        Edita un mensaje existente. Devuelve generador de eventos.
+        """
+        logger.info("✏️ Editando message_id=%s en session=%s", message_id, session_id)
+
+        queue: Queue = Queue()
+
+        def on_think(chunk: str):
+            queue.put(("think", chunk))
+
+        def on_response(chunk: str):
+            queue.put(("response", chunk))
+
+        def on_msg_id(msg_id: int):
+            queue.put(("msg_id", msg_id))
+
+        def target():
+            return self.client.edit_message(
+                session_id=session_id,
+                message_id=message_id,
+                prompt=prompt,
+                ref_file_ids=ref_file_ids,
+                search_enabled=search_enabled,
+                thinking_enabled=thinking_enabled,
+                action=action,
+                stream=True,
+                print_output=False,
+                on_think_chunk=on_think,
+                on_response_chunk=on_response,
+                on_message_id=on_msg_id,
+                save_history=True,
             )
 
         thread = self._run_chat_in_thread(queue, target)
