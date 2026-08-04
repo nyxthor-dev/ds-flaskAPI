@@ -29,7 +29,7 @@ class Config:
     CORS_ORIGINS = _split_csv(os.getenv("CORS_ORIGINS", "*"))
 
     # --- Logging ---
-    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
     # Nunca loguear el contenido de prompts/respuestas por defecto (privacidad)
     LOG_PROMPT_CONTENT = os.getenv("LOG_PROMPT_CONTENT", "false").lower() == "true"
 
@@ -37,7 +37,7 @@ class Config:
     ENV = os.getenv("FLASK_ENV", "production")
     DEBUG = ENV == "development"
     # Nunca devolver detalles internos de excepciones al cliente en producción
-    EXPOSE_ERROR_DETAILS = os.getenv("EXPOSE_ERROR_DETAILS", "false").lower() == "true" or DEBUG
+    EXPOSE_ERROR_DETAILS = os.getenv("EXPOSE_ERROR_DETAILS", "true").lower() == "true" or DEBUG
 
     # --- Rate limiting ---
     RATE_LIMIT_DEFAULT = os.getenv("RATE_LIMIT_DEFAULT", "60 per minute")
