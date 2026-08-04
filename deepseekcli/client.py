@@ -249,7 +249,7 @@ class DeepSeekClient:
         on_message_id: Optional[Callable[[int], None]] = None,
     ) -> Tuple[str, str, Optional[int], bool]:
         """
-        Procesa un stream SSE de chat/regenerate/continue.
+        Procesa un stream SSE de chat/regenerate/continue/edit.
         Devuelve: (think_text, response_text, response_message_id, is_incomplete)
         """
         fragments: dict[str, dict[str, Any]] = {}
@@ -663,6 +663,84 @@ class DeepSeekClient:
                 response=response_text,
                 ref_file_ids=[],
                 parent_message_id=message_id,
+            )
+
+        return think_text, response_text, response_message_id, is_incomplete
+
+    # ==================== EDIT MESSAGE (NUEVO) ====================
+
+    def edit_message(
+        self,
+        session_id: str,
+        message_id: Union[int, str],
+        prompt: str,
+        ref_file_ids: Optional[list[str]] = None,
+        search_enabled: bool = True,
+        thinking_enabled: bool = True,
+        action: Optional[str] = None,
+        stream: bool = True,
+        print_output: bool = True,
+        on_think_chunk: Optional[Callable[[str], None]] = None,
+        on_response_chunk: Optional[Callable[[str], None]] = None,
+        on_message_id: Optional[Callable[[int], None]] = None,
+        save_history: bool = True,
+    ) -> Tuple[str, str, Optional[int], bool]:
+        """
+        Edita un mensaje existente (reemplaza el contenido del mensaje con el nuevo prompt).
+
+        Args:
+            session_id: ID de la sesión de chat.
+            message_id: ID del mensaje a editar (entero o string convertible).
+            prompt: Nuevo texto del mensaje.
+            ref_file_ids: Lista de IDs de archivos adjuntos.
+            search_enabled: Habilitar búsqueda en línea.
+            thinking_enabled: Habilitar modo de pensamiento.
+            action: Acción adicional (ej. "regenerate").
+            stream: Si es True, procesa la respuesta en streaming.
+            print_output: Imprime la respuesta en consola.
+            on_think_chunk: Callback para fragmentos de pensamiento.
+            on_response_chunk: Callback para fragmentos de respuesta.
+            on_message_id: Callback para el ID del mensaje de respuesta.
+            save_history: Guarda el historial en disco.
+
+        Returns:
+            Tupla (think, response, response_message_id, is_incomplete).
+        """
+        try:
+            message_id = int(message_id)
+        except (ValueError, TypeError):
+            raise ValueError(f"message_id debe ser un entero, recibido: {message_id}")
+
+        # Obtener PoW para el endpoint de edición
+        pow_header = self.request_pow_header("/api/v0/chat/edit_message")
+        url = f"{BASE_URL}/api/v0/chat/edit_message"
+        headers = self._base_headers()
+        headers["x-ds-pow-response"] = pow_header
+
+        payload = {
+            "chat_session_id": session_id,
+            "message_id": message_id,
+            "ref_file_ids": ref_file_ids or [],
+            "prompt": prompt,
+            "search_enabled": search_enabled,
+            "thinking_enabled": thinking_enabled,
+            "action": action,
+        }
+
+        with self._send_request("POST", url, headers=headers, json=payload, stream=stream) as resp:
+            think_text, response_text, response_message_id, is_incomplete = self._process_stream(
+                resp, print_output, on_think_chunk, on_response_chunk, on_message_id
+            )
+
+        if save_history and response_message_id is not None:
+            # Guardar el mensaje editado (el mismo message_id pero con nuevo contenido)
+            self.chat_storage.save_or_update_chat(
+                session_id=session_id,
+                prompt=f"[EDITADO msg={message_id}] {prompt}",
+                think=think_text,
+                response=response_text,
+                ref_file_ids=ref_file_ids or [],
+                parent_message_id=message_id,  # El mensaje editado reemplaza al original
             )
 
         return think_text, response_text, response_message_id, is_incomplete
