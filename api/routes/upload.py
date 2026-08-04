@@ -89,7 +89,7 @@ def upload_file_openai():
                 # conservando el nombre original + .txt para que se note
                 # que es el contenido extraído del comprimido.
                 display_name = os.path.splitext(file.filename)[0] + "_extracted.txt"
-                file_id = service.upload_file(processed_file, thinking, display_name=display_name)
+                file_id = service.upload_file_and_wait(processed_file, thinking, display_name=display_name)
                 # Devolver el ID del archivo concatenado
                 response = {
                     "id": file_id,
@@ -147,7 +147,7 @@ def upload_file_openai():
         try:
             file_size = os.path.getsize(upload_path)
             file_ctime = int(os.path.getctime(upload_path))
-            file_id = service.upload_file(upload_path, thinking, display_name=display_name)
+            file_id = service.upload_file_and_wait(upload_path, thinking, display_name=display_name)
         finally:
             if converted_tmp_path and os.path.exists(converted_tmp_path):
                 try:
