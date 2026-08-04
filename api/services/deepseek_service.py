@@ -85,6 +85,32 @@ class DeepSeekService:
             logger.error("❌ Error al subir archivo", exc_info=True)
             raise
 
+    def upload_file_and_wait(
+        self,
+        file_path: str,
+        thinking: bool = True,
+        display_name: str = None,
+        timeout: int = 60,
+        poll_interval: int = 2,
+    ) -> str:
+        """Sube un archivo y espera a que DeepSeek termine de procesarlo
+        (status SUCCESS) antes de devolver el file_id. Sin esto, un chat
+        enviado inmediatamente después de subir el archivo puede llegar
+        antes de que el archivo esté indexado, y DeepSeek responde con
+        un stream vacío (sin error explícito) — el chat parece "no
+        generar respuesta" aunque el upload haya sido exitoso.
+        """
+        file_id = self.upload_file(file_path, thinking=thinking, display_name=display_name)
+        try:
+            status_info = self.client.wait_for_file_ready(
+                file_id, timeout=timeout, poll_interval=poll_interval
+            )
+            logger.info("✅ Archivo listo para usarse: %s (%s)", file_id, status_info.get("status"))
+        except Exception:
+            logger.error("❌ El archivo %s no quedó listo a tiempo", file_id, exc_info=True)
+            raise
+        return file_id
+
     # ============================================================
     # HELPERS INTERNOS (no duplicar código)
     # ============================================================
