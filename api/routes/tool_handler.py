@@ -34,6 +34,47 @@ def extract_text_content(content) -> str:
         return " ".join(parts)
     return ""
 
+def extract_file_ids_from_messages(messages: List[Dict]) -> List[str]:
+    """Recorre todos los mensajes y extrae los file_id de cualquier
+    parte adjunta como archivo, en varios formatos que distintos
+    clientes (RooCode, NykChat, etc.) pueden usar:
+      - {"type": "file", "file_id": "..."}
+      - {"type": "file", "file": {"id": "..."}}
+      - {"type": "image_file", "image_file": {"file_id": "..."}}
+      - {"type": "input_file", "file_id": "..."}
+    Devuelve una lista de IDs únicos, en el orden en que aparecen.
+    """
+    file_ids: List[str] = []
+    seen = set()
+
+    def _add(fid):
+        if fid and isinstance(fid, str) and fid not in seen:
+            seen.add(fid)
+            file_ids.append(fid)
+
+    for msg in messages:
+        content = msg.get("content", "")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type", "")
+            if part_type in ("file", "input_file"):
+                _add(part.get("file_id"))
+                file_obj = part.get("file")
+                if isinstance(file_obj, dict):
+                    _add(file_obj.get("id") or file_obj.get("file_id"))
+            elif part_type == "image_file":
+                image_file = part.get("image_file", {})
+                if isinstance(image_file, dict):
+                    _add(image_file.get("file_id"))
+            # Algunos clientes mandan el id suelto, sin "type" claro
+            elif "file_id" in part:
+                _add(part.get("file_id"))
+
+    return file_ids
+
 def normalize_tool_calls(message: Dict) -> Dict:
     """Convierte tool_use de Anthropic/RooCode a tool_calls de OpenAI."""
     content = message.get("content", [])
