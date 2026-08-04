@@ -376,6 +376,69 @@ def api_continue():
         )
 
 # ============================================================
+# /api/chat/edit_message (NUEVO)
+# ============================================================
+
+@chat_bp.route("/api/chat/edit_message", methods=["POST"])
+@require_api_key
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def api_edit_message():
+    """
+    Edita un mensaje existente (reemplaza el contenido del mensaje con el nuevo prompt).
+    Permite adjuntar archivos mediante ref_file_ids.
+    """
+    data = request.get_json(silent=True) or {}
+
+    session_id = data.get("session_id")
+    message_id = data.get("message_id")
+    prompt = data.get("prompt", "").strip()
+    ref_file_ids = data.get("ref_file_ids", [])
+    thinking_enabled = bool(data.get("thinking_enabled", True))
+    search_enabled = bool(data.get("search_enabled", True))
+    action = data.get("action")
+    stream = bool(data.get("stream", False))
+
+    if not session_id:
+        return openai_error("'session_id' es obligatorio")
+    if message_id is None:
+        return openai_error("'message_id' es obligatorio")
+    if not prompt:
+        return openai_error("'prompt' es obligatorio y no puede estar vacío")
+    if not isinstance(ref_file_ids, list):
+        return openai_error("'ref_file_ids' debe ser una lista de strings")
+
+    try:
+        message_id = int(message_id)
+    except (ValueError, TypeError):
+        return openai_error("'message_id' debe ser un entero")
+
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+    model = data.get("model", "deepseek-chat")
+
+    event_generator = service.edit_message(
+        session_id=session_id,
+        message_id=message_id,
+        prompt=prompt,
+        ref_file_ids=ref_file_ids,
+        thinking_enabled=thinking_enabled,
+        search_enabled=search_enabled,
+        action=action,
+    )
+
+    if stream:
+        return _stream_events(
+            completion_id, created, model, event_generator,
+            stop_sequences=[], max_tokens=None, include_usage=False,
+            session_id=session_id,
+        )
+    else:
+        return _full_events(
+            completion_id, created, model, event_generator,
+            stop_sequences=[], max_tokens=None, session_id=session_id,
+        )
+
+# ============================================================
 # FUNCIONES AUXILIARES GENÉRICAS
 # ============================================================
 

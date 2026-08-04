@@ -9,12 +9,31 @@ from extensions import limiter
 from services.deepseek_service import DeepSeekService
 from utils.auth import require_api_key
 from utils.errors import openai_error
+from utils.file_processor import is_archive, process_archive
 
 upload_bp = Blueprint("upload", __name__)
 service = DeepSeekService()
 logger = logging.getLogger(__name__)
 
-ALLOWED_EXTENSIONS = {".txt", ".pdf", ".md", ".csv", ".json", ".png", ".jpg", ".jpeg"}
+# Extensiones ahora incluyen texto/código y comprimidos
+ALLOWED_EXTENSIONS = {
+    ".txt", ".pdf", ".md", ".csv", ".json", ".png", ".jpg", ".jpeg",
+    ".py", ".js", ".html", ".css", ".xml", ".yaml", ".yml", ".sh",
+    ".bat", ".ps1", ".rb", ".java", ".c", ".cpp", ".h", ".hpp",
+    ".go", ".rs", ".swift", ".kt", ".log", ".conf", ".ini", ".properties",
+    ".toml", ".sql", ".r", ".pl", ".pm", ".tcl", ".lua", ".vim",
+    ".rst", ".tex", ".scss", ".less", ".sass", ".styl", ".vue",
+    ".jsx", ".tsx", ".ts", ".coffee", ".dart", ".lisp", ".clj",
+    ".cljs", ".edn", ".erl", ".hrl", ".ex", ".exs", ".fs", ".fsx",
+    ".ml", ".mli", ".nim", ".cr", ".zig", ".v", ".vhd", ".vhdl",
+    ".sv", ".svh", ".f", ".for", ".f90", ".f95", ".f03", ".f08",
+    ".m", ".mm", ".p", ".p6", ".pm6", ".pl6", ".t", ".pod",
+    ".make", ".cmake", ".gradle", ".sbt", ".pom", ".xsd", ".wsdl",
+    ".wadl", ".raml", ".oas", ".swagger", ".proto", ".thrift",
+    ".avsc", ".avro", ".env", ".example", ".sample", ".template",
+    # Formatos comprimidos (se procesarán por separado)
+    ".zip", ".tar", ".tgz", ".tar.gz", ".gz", ".rar",
+}
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
@@ -46,6 +65,47 @@ def upload_file_openai():
         if os.path.getsize(tmp_path) > MAX_FILE_SIZE:
             return openai_error(f"El archivo excede el tamaño máximo de {MAX_FILE_SIZE // (1024*1024)} MB")
 
+        # --- Procesar archivos comprimidos ---
+        if is_archive(file.filename):
+            logger.info("Archivo comprimido detectado: %s", file.filename)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as output_tmp:
+                output_txt_path = output_tmp.name
+            try:
+                processed_file = process_archive(tmp_path, output_txt_path)
+                if processed_file is None:
+                    return openai_error("El comprimido no contiene archivos de texto válidos.")
+                # Subir el archivo concatenado en lugar del comprimido
+                file_id = service.upload_file(processed_file, thinking)
+                # Limpiar archivo temporal generado
+                try:
+                    os.unlink(output_txt_path)
+                except OSError:
+                    pass
+                # Devolver el ID del archivo concatenado
+                response = {
+                    "id": file_id,
+                    "object": "file",
+                    "bytes": os.path.getsize(processed_file),
+                    "created_at": int(os.path.getctime(processed_file)),
+                    "filename": file.filename,  # Mantenemos el nombre original para referencia
+                    "purpose": purpose,
+                    "status": "processed",
+                    "status_details": {"processed_as": "concatenated_text"},
+                }
+                return jsonify(response), 200
+            except Exception as e:
+                logger.exception("Error al procesar archivo comprimido")
+                message = str(e) if Config.EXPOSE_ERROR_DETAILS else "Error al procesar el comprimido"
+                return openai_error(message, status_code=502, error_type="server_error")
+            finally:
+                # Limpiar archivo temporal de salida si no se eliminó
+                if os.path.exists(output_txt_path):
+                    try:
+                        os.unlink(output_txt_path)
+                    except OSError:
+                        pass
+
+        # --- Archivo individual (incluye texto y otros permitidos) ---
         file_id = service.upload_file(tmp_path, thinking)
 
         response = {
