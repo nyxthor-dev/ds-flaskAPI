@@ -595,13 +595,13 @@ Por favor, asegúrate de que tus cambios pasen los tests y siguen el estilo de c
 
 <div align="center">
 
-<a href="https://github.com/vm1008079-web">
+<a href="https://github.com/nyxthor-dev">
   <img src="https://github.com/vm1008079-web.png?size=100" width="100" style="border-radius: 50%;" alt="Víctor Manuel" />
 </a>
 
 <br>
 
-**[Víctor Manuel](https://github.com/vm1008079-web)**
+**[Víctor Manuel](https://github.com/nyxthor-dev)**
 
 🏆 Creador & Mantenedor
 
